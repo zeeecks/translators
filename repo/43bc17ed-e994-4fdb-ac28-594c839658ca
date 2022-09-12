@@ -1,0 +1,36 @@
+function detectWeb(doc, url) { 
+		return FW.detectWeb(doc, url);
+}
+function doWeb(doc, url) { return FW.doWeb(doc, url); }
+
+//technically these should be (and used to be) different item types and we should account for them, but this at least makes this work again in a basic fashion
+/** Articles */
+FW.Scraper({ itemType         : 'magazineArticle',
+			 detect           : FW.Xpath('//h2[@class="article_name"]'),
+			 title            : FW.Xpath('//h2[@class="article_name"]').text().trim(),
+			 attachments      : [
+			 { 
+				 url : FW.Url(),
+				 type : "text/html",
+				 title : "Kommersant Snapshot"
+		   } ],
+			 creators         : FW.Xpath('//li[@rel="author"]/a[2]').text().split(",").cleanAuthor("author"),
+			 date             : FW.Xpath('//div[contains(@class, "b-article_issue_number")]').text().match(/\d{2}\.\d{2}\.\d{4}/),
+			 issue            : FW.Xpath('//div[contains(@class, "b-article_issue_number")]/a').text().match(/\d+/),
+			 abstractNote     : FW.Xpath('//span[@class="b-article__intro"]').text().trimInternal(),
+			 url			  : FW.Url().replace(/(\?|&)stamp.+/, ""),
+			 pages			  : FW.Xpath('//div[contains(@class, "b-article_issue_number")]').text().match(/стр.\s*\d+/).remove(/стр.\s*/),
+			 publicationTitle : FW.Xpath('//div[contains(@class, "b-article_issue_number")]').text().match(/.+№/).remove(/№/).remove(/\. Приложение/),
+			 hooks : { "scraperDone": function  (item,doc, url) {
+				if (!item.publicationTitle) item.publicationTitle = "Коммерсантъ";	
+			 }}
+});
+
+/** Search results */
+FW.MultiScraper({ itemType  : "multiple",
+				  detect    : FW.Xpath('//div[contains(@class,"search-results_list")]'),
+				  choices : {
+					titles    : FW.Xpath('//h4[@class="article_name"]/a').text(),
+				  	urls      : FW.Xpath('//h4[@class="article_name"]/a').key('href').text()         
+				  }
+});

@@ -1,0 +1,73 @@
+function detectWeb(doc) {
+	if (ZU.xpathText(doc, '//html[contains(@class, "p-artwork-show")]')) {
+		return 'artwork';
+	}
+	else if (ZU.xpathText(doc, '//html[contains(@class, "p-collection-index")]')) {
+		return 'multiple';
+	}
+	return false;
+}
+
+function doWeb(doc) {
+	if (detectWeb(doc) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+			return true;
+		});
+	} else {
+		scrape(doc);
+	}
+}
+
+function scrape(doc) {
+	var item = new Zotero.Item('artwork');
+	item.title = ZU.xpathText(doc, '//h1');
+
+	var artists = ZU.xpath(doc, '//meta[contains(@name, "citation_author")]');
+	for (var i = 0; i < artists.length; i++) {
+		var cleaned = artists[i].content.replace(/\(.*\)$/, '').trim();
+		item.creators.push(ZU.cleanAuthor(cleaned, 'artist'));
+	}
+
+	item.attachments.push({
+		title: 'Snapshot',
+		document: doc
+	});
+
+	item.date = ZU
+		.xpath(doc, '//dl[@id="dl-artwork-details"]/dd[@itemprop="dateCreated"]/*/a')
+		.map(function (date) {
+			return date.textContent;
+		})
+		.join(', ');
+
+	item.artworkMedium = ZU.xpathText(doc, '//dl[@id="dl-artwork-details"]/dd[@itemprop="material"]');
+	item.artworkSize = ZU.xpathText(doc, '//dl[@id="dl-artwork-details"]/dd[@itemprop="size"]');
+	item.callNumber = ZU.xpathText(doc, '//dl[@id="dl-artwork-details"]/dd[@itemprop="identifier"]');
+
+	item.url = ZU.xpathText(doc, '//link[@rel="canonical"]/@href');
+
+	item.complete();
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//ul[@id="artworksList"]/li/a');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}

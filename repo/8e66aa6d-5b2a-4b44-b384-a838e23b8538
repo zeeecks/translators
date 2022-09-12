@@ -1,0 +1,82 @@
+function detectWeb(doc, url) {
+	if (url.search(/\/opac-(search|shelves)\.pl\?/)!=-1 && getSearchResults(doc, true)) return "multiple";
+	if (url.indexOf("/opac-detail.pl?")!=-1) return "book";
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {}, found = false;
+	var resultContainer = doc.getElementsByClassName('searchresults')[0];
+	if (!resultContainer) return false;
+	
+	resultContainer = doc.getElementsByTagName('tr');
+	for (var i=0; i<resultContainer.length; i++) {
+		//newer KOHA versions, e.g. http://catalog.bywatersolutions.com
+		var item = ZU.xpath(resultContainer[i], '(.//a[@class="title" and contains(@href, "opac-detail.pl")])[1]')[0];
+		if (!item){
+			//older KOHA versions, e.g. https://catalogue.univ-lyon3.fr/
+			item = ZU.xpath(resultContainer[i], '(.//a[contains(@href, "opac-detail.pl")])[1]')[0];
+		}
+		
+		if (!item) continue;
+		
+		if (checkOnly) return true;
+		found = true;
+		items[item.href] = ZU.trimInternal(item.textContent);
+	}
+	
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc), function (items) {
+			if (!items) return true;
+			
+			var articles = [];
+			for (var i in items) {
+				articles.push(marcURL(i));
+			}
+			scrape(articles);
+		});
+	} else {
+		scrape(marcURL(url));
+	}
+}
+
+function scrape(marcurl) {
+	Zotero.Utilities.HTTP.doGet(marcurl, function (text) {
+		var translator = Zotero.loadTranslator("import");
+		// Use MARC translator
+		translator.setTranslator("a6ee60df-1ddc-4aae-bb25-45e0537be973");
+		translator.setString(text);
+		translator.setHandler("itemDone", function (obj, item) {
+			//editors get mapped as contributors - but so do many others who should be
+			// --> for books that don't have an author, turn contributors into editors.
+			if (item.itemType=="book"){
+				var hasAuthor = false;
+				for (var i in item.creators) {
+					if (item.creators[i].creatorType=="author") {
+						hasAuthor = true;
+						break;
+					}
+				}
+				if (!hasAuthor) {
+					for (var i in item.creators) {
+						if (item.creators[i].creatorType=="contributor") {
+							item.creators[i].creatorType="editor";
+						}
+					}
+				}
+			}
+			item.complete();
+		});
+		translator.translate();
+	}) //doGet end
+} 
+
+function marcURL(url){
+	var bibnumber = url.match(/(biblionumber=)(\d+)/)[2];
+	var host = url.match(/^.+cgi-bin\/koha\//)[0];
+	var marcURL = host + "opac-export.pl?format=utf8&op=export&bib=" + bibnumber +"save=Go";
+	return marcURL;
+}

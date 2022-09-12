@@ -1,0 +1,95 @@
+function detectWeb(doc, _url) {
+	if (getRISElement(doc)) return "newspaperArticle";
+	if (getSearchResults(doc, true)) return "multiple";
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {}, found = false;
+	var rows = doc.querySelectorAll('article');
+	if (!rows.length) rows = doc.querySelectorAll('.hit');
+	if (!rows.length) return false;
+
+	for (let row of rows) {
+		var title = row.querySelector('.search-hits__hit__title')
+			|| row.querySelector('.article-title');
+		var link = row.querySelector('a');
+		var prefix = text(link, '.element-invisible');
+		if (!title || !link) continue;
+		found = true;
+		if (checkOnly) return true;
+
+		items[link.href] = ZU.trimInternal(title.textContent.replace(prefix, ''));
+	}
+
+	return found ? items : false;
+}
+
+function getRISElement(doc) {
+	return doc.getElementById('nbplatform-noodletools-export-risdatabyformpost')
+		|| doc.querySelector('.action-link--exportcitation');
+}
+
+function getItem(doc, url) {
+	var risElem = getRISElement(doc);
+	if (risElem.href) {
+		ZU.doGet(risElem.href, risText => itemFromRIS(doc, url, risText));
+	}
+	else {
+		itemFromRIS(doc, url, risElem.textContent.trim());
+	}
+}
+
+function itemFromRIS(doc, url, risText) {
+	//	Z.debug(risText);
+	var trans = Zotero.loadTranslator('import');
+	// RIS
+	trans.setTranslator('32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7');
+	trans.setString(risText);
+	trans.setHandler('itemDone', function (obj, item) {
+		if (item.pages) {
+			item.pages = item.pages
+				.replace(/\bpage\b\s*/gi, '')
+				.replace(/,(\S)/g, ', $1');
+		}
+		
+		let openURL = attr(doc, '.action-link--bookmark', 'onclick')
+			.match(/f_openurl=([^&'"]+)/);
+		item.url = text(doc, '.actions-bar__urltext')
+			|| (openURL && decodeURIComponent(openURL[1]))
+			|| url;
+		
+		let pdfURL = attr(doc, '.action-link--pdf', 'href');
+		if (pdfURL) {
+			item.attachments.push({
+				title: 'Full Text PDF',
+				mimeType: 'application/pdf',
+				url: pdfURL
+			});
+		}
+		else {
+			item.attachments.push({
+				title: 'Snapshot',
+				document: doc
+			});
+		}
+
+		item.complete();
+	});
+	trans.translate();
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		var items = getSearchResults(doc);
+		//	Zotero.debug(items);
+
+		Zotero.selectItems(items, function (items) {
+			if (!items) return;
+			ZU.processDocuments(Object.keys(items), getItem);
+		});
+	}
+	else {
+		getItem(doc, url);
+	}
+}

@@ -1,0 +1,73 @@
+function detectWeb(doc, url) {
+	var type = ZU.xpathText(doc, '//meta[@property="og:type"]/@content');
+	if (type=="article") {
+		return "newspaperArticle";
+	} else if (type=="blog") {
+		return "blogPost";
+	} else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//h2[contains(@class, "card__headline")]/a[contains(@class, "card__link") and contains(@href, "/entry/")]');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var json = ZU.xpathText(doc, '//script[@type="application/ld+json"]');
+	var object = JSON.parse(json);
+	//Z.debug(object);
+	var itemType = detectWeb(doc, url);
+	var item = new Zotero.Item(itemType);
+	item.title = object.headline;
+	item.date = object.datePublished;
+	if (object.author) {
+		if (!Array.isArray(object.author)) {
+			object.author = [object.author];
+		}
+		for (var i=0; i<object.author.length; i++) {
+			if (object.author[i].name) {
+				item.creators.push(ZU.cleanAuthor(object.author[i].name, "author"));
+			}
+		}
+	}
+	item.section = object.articleSection;
+	item.publicationTitle = "Huffington Post";
+	item.abstractNote = object.description;
+	item.language = object.inLanguage;
+	item.url = object.mainEntityOfPage["@id"];
+	item.attachments.push({
+		title:"Snapshot",
+		document:doc
+	});
+	item.complete();
+}

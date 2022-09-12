@@ -1,0 +1,88 @@
+function detectWeb(doc, url) {
+	if (typeByUrl(url))  {
+		return typeByUrl(url)
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+function typeByUrl (url) {
+	if (url.indexOf('/p/')>-1) {
+		return "report";
+	}
+	else if (url.indexOf('/a/')>-1) {
+		return "journalArticle";
+	}
+	else if (url.indexOf('/c/')>-1) {
+		return "computerProgram";
+	}
+	else if (url.indexOf('/b/')>-1) {
+		return "book";
+	}
+	else if (url.indexOf('/h/')>-1) {
+		return "bookSection";
+	}
+	else return false;
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//table[contains(@class, "res")]//span[contains(@class, "title")]/a|//ul[contains(@class, "paperlist")]//a');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var type = typeByUrl(url);
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	//translator.setDocument(doc);
+	translator.setHandler('itemDone', function (obj, item) {
+		if (type=="report" && item.publicationTitle) {
+			item.seriesTitle = item.publicationTitle;
+		}
+		var pdfurl = ZU.xpathText(doc, '//form/input[@type="radio" and contains(@value, ".pdf")]/@value');
+		if (pdfurl) {
+			item.attachments.push({
+				url: pdfurl,
+				title: "Fullext PDF",
+				type: "application/pdf"
+			})
+		}
+		item.complete();
+	});
+	translator.getTranslatorObject(function(trans) {
+		trans.itemType = type;
+		trans.doWeb(doc, url);
+	});
+}

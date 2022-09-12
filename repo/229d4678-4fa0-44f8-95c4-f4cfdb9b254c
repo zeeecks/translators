@@ -1,0 +1,117 @@
+/**
+	Copyright (c) 2013-2021 Sebastian Karcher and Abe Jellinek
+	
+	This program is free software: you can redistribute it and/or
+	modify it under the terms of the GNU Affero General Public License
+	as published by the Free Software Foundation, either version 3 of
+	the License, or (at your option) any later version.
+	
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+	Affero General Public License for more details.
+	
+	You should have received a copy of the GNU Affero General Public
+	License along with this program. If not, see
+	<http://www.gnu.org/licenses/>.
+*/
+
+function detectWeb(doc, url) {
+	if (/details\/r\//i.test(url)) {
+		return "manuscript";
+	}
+	else if (/results\/r\/?\?.+hb=tna/i.test(url)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function scrape(doc, url) {
+	var id = url.match(/details\/r\/([A-Z\-0-9]+)/i)[1];
+	var reference = ZU.xpathText(doc, '//tr/th[contains(text(), "Reference")]/following-sibling::td');
+	var tags = ZU.xpath(doc, '//span/a[@class="tagName"]');
+	
+	var apiUrl = "http://discovery.nationalarchives.gov.uk/API/records/v1/details/" + id;
+	Zotero.Utilities.doGet(apiUrl, function (text) {
+		var data = JSON.parse(text);
+		var item = new Zotero.Item("manuscript");
+		
+		var title = data.title || doc.title.split(' | ')[0];
+		item.title = ZU.cleanTags(title.replace(/&lt.+?&gt;/g, ""));
+		item.archiveLocation = reference;
+		item.language = data.language;
+		item.date = data.coveringDates;
+		if (data.scopeContent && data.scopeContent.description) {
+			item.abstractNote = ZU.cleanTags(data.scopeContent.description
+				.replace(/<p>/g, "\n").replace(/&lt;p&gt;/g, "\n"))
+				.replace(/\n+/g, "\n");
+		}
+		var holdings = data.heldBy;
+		if (holdings && holdings.length) {
+			item.archive = holdings.map(entry => entry.xReferenceName).join();
+		}
+		item.type = data.physicalDescriptionForm;
+		item.attachments.push({
+			document: doc,
+			title: "Catalog Entry"
+		});
+		var creators = data.creatorName;
+		for (let creator of creators) {
+			if (creator.surname) {
+				if (creator.firstName) {
+					item.creators.push({
+						lastName: creator.surname,
+						firstName: creator.firstName,
+						creatorType: "author"
+					});
+				}
+				else {
+					item.creators.push({
+						lastName: creator.surname,
+						fieldMode: 1,
+						creatorType: "author"
+					});
+				}
+			}
+			else {
+				item.creators.push({
+					lastName: creator.xReferenceName,
+					fieldMode: 1,
+					creatorType: "contributor"
+				});
+			}
+		}
+		for (var tag of tags) {
+			item.tags.push({ tag: tag.textContent });
+		}
+		item.complete();
+	});
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		var items = [];
+		
+		// search results
+		var titles = ZU.xpath(doc, '//ul[@id="search-results"]//a');
+
+		if (!titles.length) {
+			// TODO - other multiples
+			return;
+			// titles = ZU.xpath(doc, '//td[@id="leaf-linkarea2"]//a[contains(@href, "/receive/jportal_jparticle")]');
+		}
+		for (var i in titles) {
+			items[titles[i].href] = ZU.trimInternal(titles[i].textContent);
+		}
+		Zotero.selectItems(items, function (items) {
+			if (!items) {
+				return;
+			}
+			ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}

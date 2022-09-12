@@ -1,0 +1,120 @@
+/*
+  They use Primo and Alma as their backend and have programmed an
+  individual frontend called Forward for their catalog. We can simply
+  use their RIS data.
+*/
+
+function detectWeb(doc, url) {
+	if (url.includes('/search/') && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	else if (url.includes('/catalog/')) {
+		var format = getFormat(doc);
+		// Z.debug(format);
+		switch (format) {
+			case "Sound Recordings":
+				return "audioRecording";
+
+			case "Videos, Slides, Films":
+				return "videoRecording";
+
+			case "Maps, Atlases":
+				return "map";
+
+			case "Computer software":
+				return "computerProgramm";
+
+			case "Photos, Drawings, Prints":
+				return "artwork";
+
+			case "Music Scores":
+			case "Journals, Magazines, Newspapers": // there is no such itemType yet
+			default:
+				return "book";
+		}
+	}
+	return false;
+}
+
+function getFormat(doc) {
+	return text(doc, '.type');
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a.item_path[href*="/catalog/"]');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) return;
+
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var risURL = url.replace(/[#?].*$/, '') + '.ris';
+	// there is also a link tag for RIS but the href is currently missing
+
+	ZU.doGet(risURL, function (text) {
+		// delete birth/death year from author name
+		text = text.replace(/^(AU\s+-.*), \d\d\d\d-(\d\d\d\d)?$/m, "$1");
+		// music scores should be treated as book
+		text = text.replace('TY  - MUSIC', 'TY  - BOOK');
+		if (getFormat(doc) && getFormat(doc).includes('Book')) {
+			// fix for an odd RIS issue in one of the tests - a book is tagged
+			// as a presentation
+			text = text.replace('TY  - SLIDE', 'TY  - BOOK');
+		}
+		// Z.debug(text);
+
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(text);
+		translator.setHandler("itemDone", function (obj, item) {
+			if (item.abstractNote) {
+				// sometimes the physical description is saved in the abstract
+				// e.g. 38 pages ; 24 cm
+				var m = item.abstractNote.match(/(\d+)\spages\b/);
+				if (m) {
+					item.numPages = m[1];
+					delete item.abstractNote;
+				}
+			}
+			// clean-up the information for publisher
+			// e.g. Chicago : Association of College and Research Libraries, 2011.
+			if (item.publisher) {
+				item.publisher = item.publisher.replace(/,\s\d\d\d\d\.?$/, '');
+				var parts = item.publisher.split(' : ');
+				if (parts.length == 2) {
+					item.place = parts[0];
+					item.publisher = parts[1];
+				}
+			}
+			item.complete();
+		});
+		translator.translate();
+	});
+}

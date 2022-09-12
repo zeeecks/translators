@@ -1,0 +1,214 @@
+function detectWeb(doc, url) {
+	if (url.match(/\/item.asp/)) {
+		return getDocType(doc);
+	}
+	else if (url.match(/\/(query_results|contents|org_items|itembox_items)\.asp/)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function doWeb(doc, url) {
+	var articles = [];
+	if (detectWeb(doc, url) == "multiple") {
+		var results = ZU.xpath(doc, '//table[@id="restab"]/tbody/tr[starts-with(@id, "arw")]/td[2]');
+		// Zotero.debug('results.length: ' + results.length);
+		var items = {};
+		for (let i = 0; i < results.length; i++) {
+			// Zotero.debug('result [' + i + '] text: ' + results[i].textContent);
+			var title = ZU.xpathText(results[i], './a');
+			var uri = ZU.xpathText(results[i], ' ./a/@href');
+			if (!title || !uri) continue;
+			items[uri] = fixCasing(title);
+		}
+		Zotero.selectItems(items, function (items) {
+			if (!items) {
+				return;
+			}
+			for (let i in items) {
+				articles.push(i);
+			}
+			Zotero.Utilities.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function fixCasing(string) {
+	if (string && string == string.toUpperCase()) {
+		return ZU.capitalizeTitle(string, true);
+	}
+	else return string;
+}
+
+function getDocType(doc) {
+	var docType = ZU.xpathText(doc, '//tr/td/text()[contains(., "Тип:")]/following-sibling::*[1]');
+	var itemType;
+	
+	switch (docType) {
+		case "обзорная статья":
+		case "статья в журнале - научная статья":
+		case "научная статья":
+		case "статья в журнале":
+		case "статья в открытом архиве":
+			itemType = "journalArticle";
+			break;
+		case "статья в сборнике трудов конференции":
+			itemType = "conferencePaper";
+			break;
+		case "учебное пособие":
+		case "монография":
+			itemType = "book";
+			break;
+		case "публикация в сборнике трудов конференции":
+			itemType = "conferencePaper";
+			break;
+		default:
+			Zotero.debug("Unknown type: " + docType + ". Using 'journalArticle'");
+			itemType = "journalArticle";
+			break;
+	}
+	return itemType;
+}
+
+function scrape(doc, url) {
+	var item = new Zotero.Item();
+	item.itemType = getDocType(doc);
+	item.title = fixCasing(doc.title);
+	item.url = url;
+	
+	var rightPart = doc.getElementById("leftcol").nextSibling;
+	var centralColumn = ZU.xpath(rightPart, './table/tbody/tr[2]/td[@align="left"]');
+	var datablock = ZU.xpath(centralColumn, './div[1]');
+	
+	var authors = ZU.xpath(datablock, './/table[1]//b');
+	// Zotero.debug('authors.length: ' + authors.length);
+	
+	for (let i = 0; i < authors.length; i++) {
+		var dirty = authors[i].textContent;
+		// Zotero.debug('author[' + i + '] text: ' + dirty);
+		
+		/* Common author field formats are:
+			(1) "LAST FIRST PATRONIMIC"
+			(2) "LAST F. P." || "LAST F.P." || "LAST F.P" || "LAST F."
+			
+		   In all these cases, we put comma after LAST for `ZU.cleanAuthor()` to work.
+		   Other formats are rare, but possible, e.g. "ВАН ДЕ КЕРЧОВЕ Р." == "Van de Kerchove R.".
+		   They go to single-field mode (assuming they got no comma). */
+		var nameFormat1RE = new ZU.XRegExp("^\\p{Letter}+\\s\\p{Letter}+\\s\\p{Letter}+$");
+		var nameFormat2RE = new ZU.XRegExp("^\\p{Letter}+\\s\\p{Letter}\\.(\\s?\\p{Letter}\\.?)?$");
+		
+		var isFormat1 = ZU.XRegExp.test(dirty, nameFormat1RE);
+		var isFormat2 = ZU.XRegExp.test(dirty, nameFormat2RE);
+		
+		if (isFormat1 || isFormat2) {
+			// add comma before the first space
+			dirty = dirty.replace(/^([^\s]*)(\s)/, '$1, ');
+		}
+		
+		var cleaned = ZU.cleanAuthor(dirty, "author", true);
+		
+		/* Now `cleaned.firstName` is:
+			(1) "FIRST PATRONIMIC"
+			(2) "F. P." || "F."
+			
+		   The `fixCasing()` makes 2nd letter lowercase sometimes,
+		   for example, "S. V." -> "S. v.", but "S. K." -> "S. K.".
+		   Thus, we can only apply it to Format1 . */
+		
+		if (isFormat1) {
+			// "FIRST PATRONIMIC" -> "First Patronimic"
+			cleaned.firstName = fixCasing(cleaned.firstName);
+		}
+		
+		if (cleaned.firstName === undefined) {
+			// Unable to parse. Restore punctuation.
+			cleaned.fieldMode = true;
+			cleaned.lastName = dirty;
+		}
+		
+		cleaned.lastName = fixCasing(cleaned.lastName, true);
+		
+		// Skip entries with an @ sign-- email addresses slip in otherwise
+		if (!cleaned.lastName.includes("@")) item.creators.push(cleaned);
+	}
+
+	var mapping = {
+		Издательство: "publisher",
+		"Дата депонирования": "date",
+		"Год издания": "date",
+		Год: "date",
+		Том: "volume",
+		Номер: "issue",
+		ISSN: "ISSN",
+		"Число страниц": "pages", // e.g. "83"
+		Страницы: "pages", // e.g. "10-16"
+		Язык: "language",
+		"Место издания": "place"
+	};
+	
+	
+	for (let key in mapping) {
+		var t = ZU.xpathText(datablock, './/tr/td/text()[contains(., "' + key + ':")]/following-sibling::*[1]');
+		if (t) {
+			item[mapping[key]] = t;
+		}
+	}
+	
+	/*
+	// Times-cited in Russian-Science-Citation-Index.
+	// This value is hardly useful for most users, would just clutter "extra" field.
+	// Keeping this code just-in-case.
+	var rsci = ZU.xpathText(doc, '//tr/td/text()[contains(., "Цитирований в РИНЦ")]/following-sibling::*[2]');
+	Zotero.debug("Russian Science Citation Index: " + rsci);
+	if (rsci) item.extra = "Цитируемость в РИНЦ: " + rsci;
+	*/
+
+	var journalBlock = ZU.xpath(datablock, './table/tbody[tr[1]/td/font[contains(text(), "ЖУРНАЛ:")]]/tr[2]/td[2]');
+	if (!item.publicationTitle) item.publicationTitle = ZU.xpathText(journalBlock, ".//a[1]");
+	item.publicationTitle = fixCasing(item.publicationTitle);
+
+	var tags = ZU.xpath(datablock, './table[tbody/tr/td/font[contains(text(), "КЛЮЧЕВЫЕ СЛОВА:")]]//tr[2]/td/a');
+	for (let j = 0; j < tags.length; j++) {
+		item.tags.push(fixCasing(tags[j].textContent));
+	}
+
+	item.abstractNote = ZU.xpathText(datablock, './table/tbody/tr[td/font[text() = "АННОТАЦИЯ:"]]/following-sibling::*[1]');
+	
+	// Language to RFC-4646 code
+	switch (item.language) {
+		case "русский":
+			item.language = "ru";
+			break;
+		case "английский":
+			item.language = "en";
+			break;
+		default:
+			Zotero.debug("Unknown language: " + item.language + " - keeping as-is.");
+			break;
+	}
+
+	item.DOI = ZU.xpathText(doc, '/html/head/meta[@name="doi"]/@content');
+	
+	/* var pdf = false;
+	// Now see if we have a free PDF to download
+	var pdfImage = doc.evaluate('//a/img[@src="/images/pdf_green.gif"]', doc, null,XPathResult.ANY_TYPE, null).iterateNext();
+	if (pdfImage) {
+		// A green PDF is a free one. We need to construct the POST request
+		var postData = [], postField;
+		var postNode = doc.evaluate('//form[@name="results"]/input', doc, null,XPathResult.ANY_TYPE, null);
+		while ((postField = postNode.iterateNext()) !== null) {
+			postData.push(postField.name + "=" +postField.value);
+		}
+		postData = postData.join("&");
+		Zotero.debug(postData + postNode.iterateNext());
+		Zotero.Utilities.HTTP.doPost('http://elibrary.ru/full_text.asp', postData, function(text) {
+			var href = text.match(/http:\/\/elibrary.ru\/download\/.*?\.pdf/)[0];
+			pdf = {url:href, title:"eLibrary.ru полный текст", mimeType:"application/pdf"};
+		});
+	}*/
+
+	item.complete();
+}

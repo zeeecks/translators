@@ -1,0 +1,71 @@
+function detectWeb(doc, url) {
+	if (url.includes('/biography/')) {
+		return "bookSection";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a.name');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item('bookSection');
+	let main = doc.querySelector('#pageColumnMain');
+	
+	item.title = text(main, 'h2');
+	item.abstractNote = text(main, '.biographyContent p');
+	item.bookTitle = 'Australian Dictionary of Biography';
+	
+	let noticeMatches = text(main, '.textNotice')
+		.match(/([^,]+), \(MUP\), ([^,]+)/);
+	if (noticeMatches) {
+		item.volume = noticeMatches[1].replace(/^\s*volume/i, '');
+		item.date = ZU.strToISO(noticeMatches[2]);
+	}
+	else {
+		item.date = ZU.strToISO(text(main, '.textNotice'));
+	}
+	
+	item.numberOfVolumes = '18';
+	item.publisher = 'National Centre of Biography, Australian National University';
+	item.place = 'Canberra';
+	item.language = 'en';
+	item.url = url;
+	
+	for (let author of main.querySelectorAll('.authorName a')) {
+		item.creators.push(ZU.cleanAuthor(author.textContent, 'author'));
+	}
+	
+	item.attachments.push({
+		title: 'Snapshot',
+		document: doc
+	});
+	
+	item.complete();
+}

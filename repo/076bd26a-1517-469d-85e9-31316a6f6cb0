@@ -1,0 +1,129 @@
+function detectWeb(doc, url) {
+	if (doc.getElementById("header_title_text")) {
+		var titleLink = ZU.xpath(doc, '//span[@id="header_title_text"]/a');
+		if (titleLink.length && (titleLink[0].textContent.match(/Encyclop(æ|ae|e)dia|Dictionary/) )) {
+			return "encyclopediaArticle";
+		}
+		if (doc.getElementById("ca-proofread-source")) {
+			if (doc.getElementById("header_section_text")) {
+				return "bookSection";
+			} else {
+				return "book";
+			}
+		} else {
+			return "manuscript";
+		}
+	} else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//ul[contains(@class, "search-results")]//a');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = new Array();
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var item = new Zotero.Item(detectWeb(doc, url));
+	if (item.itemType === "bookSection") {
+		item.title = doc.getElementById("header_section_text").textContent;
+		item.bookTitle = doc.getElementById("header_title_text").textContent;
+	} else if (item.itemType === "encyclopediaArticle") {
+		var header = doc.getElementById("header_title_text");
+		item.encyclopediaTitle   = ZU.xpathText(header, './a[1]');
+		if (ZU.xpath(header, './a[2]').length > 0) {
+			item.volume   = ZU.xpathText(header, './a[2]');
+		}
+		if (doc.getElementById("header_section_text")) {
+			item.title = doc.getElementById("header_section_text").textContent;
+		} else {
+			item.title = ZU.xpathText(doc, '//*[@id="header_title_text"]/text()').replace(/(,|\n)/g,'');
+		}
+	} else {
+		item.title = doc.getElementById("header_title_text").textContent;
+	}
+	
+	var creators = ZU.xpath(doc, '//span[@id="header_author_text"]');
+	for (var i=0; i<creators.length; i++) {
+		var author = creators[i].textContent.replace('by', '').replace(/\(.+/, '');
+		item.creators.push(ZU.cleanAuthor(author, "author"));
+	}
+	var tags = ZU.xpath(doc, '//div[@id="mw-normal-catlinks"]/ul/li/a');
+	for (var i=0; i<tags.length; i++) {
+		item.tags.push(tags[i].text);
+	}
+
+	item.rights = ZU.xpathText(doc, '//li[@id="footer-info-copyright"]');
+	item.archive = "Wikisource";
+	var permalink = ZU.xpathText(doc, '//li[@id="t-permalink"]/a/@href');
+	item.attachments.push({
+		url : permalink,
+		title : "Wikisource Snapshot",
+		type : "text/html"
+	});
+	
+	//Add more metadata from the "Source" page if it is present
+	var sourcePage = ZU.xpathText(doc, '//li[@id="ca-proofread-source"]//a/@href');
+	if (sourcePage) {
+		ZU.processDocuments(sourcePage, function(sourceDoc) {
+			scrapeSource(sourceDoc, item);
+		});
+	} else {
+		item.complete();
+	}
+}
+
+
+function scrapeSource(doc, item) {
+	var indexedFields = {};
+	var lines = ZU.xpath(doc, '//table[@id="prp-indexTable"]/tbody/tr');
+	for (var i=0; i<lines.length; i++) {
+		var label = ZU.xpathText(lines[i], './th').trim();
+		var value = ZU.xpathText(lines[i], './td').trim();
+		indexedFields[label] = value;
+	}
+	//Z.debug(indexedFields);
+	if (indexedFields.Year) {
+		item.date = indexedFields.Year;
+	}
+	if (indexedFields.Publisher) {
+		item.publisher = indexedFields.Publisher;
+	}
+	if (indexedFields.Location) {
+		item.place = indexedFields.Location;
+	}
+	if (indexedFields.Editor) {
+		item.creators.push(ZU.cleanAuthor(indexedFields.Editor, "editor"));
+	}
+	if (indexedFields.Illustrator) {
+		item.creators.push(ZU.cleanAuthor(indexedFields.Illustrator, "contributor"));
+	}
+	item.complete();
+}

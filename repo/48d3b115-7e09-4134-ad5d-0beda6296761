@@ -1,0 +1,13 @@
+function getSearchResults(doc) {
+	return doc.getElementsByClassName("resultItem");
+}
+
+function detectWeb(doc, url) {
+	if (url.indexOf('search') !== -1 && getSearchResults(doc).length) {
+		return 'multiple';
+	}
+	
+	if (ZU.xpathText(doc, '/html/head/meta[@name="citation_journal_title"]/@content')) {
+		return 'journalArticle';
+	}
+	else if (doc.body.id == 'conferencepaper') return "conferencePaper

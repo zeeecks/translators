@@ -1,0 +1,84 @@
+var typeMapping = {
+	book: "book",
+	visual: "artwork",
+	map: "map",
+	audio: "audioRecording",
+	periodical: "document",
+	"mixed-material": "document",
+	"music-score": "document"
+};
+
+function detectWeb(doc, _url) {
+	if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	else {
+		var itemType = text(doc, 'div.record-details__type');
+		return typeMapping[itemType];
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll("div[prefix='schema: http://schema.org/ dct:http://purl.org/dc/terms/']");
+	if (checkOnly && rows.length > 1) return true;
+	else if (checkOnly && rows.length <= 1) return false;
+	for (let row of rows) {
+		let href = "/search?id=" + row.getAttribute('resource').split('/')[4] + "&format=mods";
+		let title = ZU.trimInternal(text(row, 'div.record-details__title a'));
+		if (title.endsWith(" /")) title = title.slice(0, -2);
+		if (!href || !title) continue;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) {
+				for (let href of Object.keys(items)) scrape(href);
+			}
+		});
+	}
+	else {
+		var row = doc.querySelector("div[prefix='schema: http://schema.org/ dct:http://purl.org/dc/terms/']");
+		let href = "/search?id=" + row.getAttribute('resource').split('/')[4] + "&format=mods";
+		scrape(href);
+	}
+}
+
+function scrape(url) {
+	ZU.doGet(url, function (text) {
+		var translator = Zotero.loadTranslator('import');
+		// MODS
+		translator.setTranslator('0e2235e7-babf-413c-9acf-f27cce5f059c');
+		translator.setString(text);
+		
+		translator.setHandler('itemDone', function (_, item) {
+			if (item.itemType == 'document' && (item.ISBN || item.edition)) {
+				item.itemType = 'book';
+			}
+			
+			delete item.archiveLocation; // list of libraries it's available in
+			
+			if (item.title) {
+				item.title = item.title.replace(/\.$/, '');
+			}
+			
+			if (item.edition) {
+				item.edition = item.edition.replace(/\.$/, '');
+			}
+			
+			if (item.publisher) {
+				item.publisher = item.publisher.replace(/\.$/, '');
+			}
+			
+			item.complete();
+		});
+		
+		translator.translate();
+	});
+}

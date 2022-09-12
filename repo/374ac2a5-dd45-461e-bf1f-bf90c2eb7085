@@ -1,0 +1,128 @@
+/*
+Tagesspiegel Translator
+Copyright (C) 2011 Martin Meyerhoff
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+function detectWeb(doc, url) {
+	if (ZU.xpathText(doc, "//meta[@property='og:type']/@content") == "article") {
+		return "newspaperArticle";
+	}
+	else if (url.includes('/suchergebnis/')) {
+		return "multiple";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//h2/a[span[contains(@class, "hcf-headline")]]');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.xpathText(rows[i], './span[contains(@class, "hcf-headline")]');
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var newItem = new Zotero.Item("newspaperArticle");
+
+	newItem.title = ZU.xpathText(doc, "//meta[@property='og:title']/@content");
+	newItem.date = ZU.xpathText(doc, "//time[@itemprop='datePublished']/@datetime");
+	newItem.abstractNote = ZU.xpathText(doc, '//meta[@name="description"]/@content');
+	// Note: it only grabs the top-level section
+	newItem.section = ZU.xpathText(doc, '//ul[contains(@class, "ts-main-nav-items")]/li[contains(@class, "ts-active")]/a');
+
+	// Authors
+	var author = ZU.xpathText(doc, "//header[contains(@class, 'ts-article-header')]//a[@rel='author']");
+	// Zotero.debug(author);
+	if (author) {
+		author = author.replace(/^[Vv]on\s|Kommentar\svon\s/g, '');
+		author = author.split(/,\s|\sund\s/);
+		for (var i = 0; i < author.length; i++) {
+			newItem.creators.push(ZU.cleanAuthor(author[i], "author"));
+		}
+	}
+	
+	newItem.url = ZU.xpathText(doc, '//link[@rel="canonical"]/@href') || url;
+	newItem.attachments.push({
+		url: newItem.url,
+		title: "Snapshot",
+		mimeType: "text/html"
+	});
+	
+	// Tags
+	/* We read the tags from the initialisation of variable cmsObject.
+	 * This object and the keywords are defined in a head script tag.
+	 */
+	let tags = [];
+	let scriptItems = doc.querySelectorAll('head > script');
+	if (scriptItems) {
+		for (let i = 0; i < scriptItems.length; i++) {
+			let scriptItemText = scriptItems[i].textContent;
+			// search for script tag that declares the variable
+			if (!scriptItemText.match(/var\s+cmsObject\s*=/)) {
+				continue;
+			}
+			// the pid seems to be added at the end of the keywords, so we remove it
+			let matches = scriptItemText.match(/keywords:\s*"(.+?)(,pid\d+)?",/);
+			if (!matches) {
+				continue;
+			}
+			tags = matches[1].split(',');
+			break;
+		}
+	}
+	for (let tag of tags) {
+		if (tag.match(/^\s*_/)) {
+			continue;
+		}
+		newItem.tags.push(tag.replace(/_/g, ' ').trim());
+	}
+	newItem.publicationTitle = "Der Tagesspiegel Online";
+	newItem.language = "de-DE";
+	newItem.ISSN = "1865-2263";
+	newItem.complete();
+}

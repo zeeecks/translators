@@ -1,0 +1,404 @@
+function trim(content) {
+	return content.replace(/^[\xA0\s]+/gm, '')
+		.replace(/[\xA0\s]+$/gm, '')
+		.replace(/\n+/g, '\n')
+		.replace(/:\n+/g, ': ')
+		.replace(/]\n/g, ']')
+		.replace(/】\n/g, '】')
+		.replace(/\n\/\n/g, '/');
+}
+
+// https://aurimasv.github.io/z2csl/typeMap.xml#map-book
+// https://aurimasv.github.io/z2csl/typeMap.xml#map-conferencePaper
+// https://aurimasv.github.io/z2csl/typeMap.xml#map-thesis
+// https://aurimasv.github.io/z2csl/typeMap.xml#map-journalArticle
+// https://aurimasv.github.io/z2csl/typeMap.xml#map-patent
+var TYPE_MAP = {
+	图书: 'book',
+	会议论文: 'conferencePaper',
+	学位论文: 'thesis',
+	期刊: 'journalArticle',
+	专利: 'patent'
+};
+
+function doPerson(item, data) {
+	// （日）本田晃一著；朱运程译 translator author
+	if (!data) return;
+	const persons = data.split(/；|;/g);
+	for (var person of persons) {
+		if (person.endsWith('著')) {
+			item.creators.push({
+				lastName: person.trim().replace(/著$/g, ''),
+				creatorType: 'author',
+				fieldMode: 1
+			});
+		}
+		else if (person.endsWith('译')) {
+			item.creators.push({
+				lastName: person.trim().replace(/译$/g, ''),
+				creatorType: 'translator',
+				fieldMode: 1
+			});
+		}
+		else {
+			item.creators.push({
+				lastName: person,
+				creatorType: 'author',
+				fieldMode: 1
+			});
+		}
+	}
+}
+
+function doInventor(item, data) {
+	if (!data || data.length <= 0) return;
+	const persons = data.split('，');
+	for (var person of persons) {
+		item.creators.push({
+			lastName: person,
+			creatorType: 'inventor',
+			fieldMode: 1
+		});
+	}
+}
+
+function doTag(item, data) {
+	if (!data || data.length <= 0) return;
+	const tags = data.split('；');
+	for (var tag of tags) {
+		item.tags.push(tag.trim());
+	}
+}
+
+function sourceType(doc) {
+	var type = doc.querySelector('.on span').textContent;
+	return type;
+}
+
+function detectType(doc) {
+	return TYPE_MAP[sourceType(doc)];
+}
+
+function detectWeb(doc, url) {
+	if (url.includes('/search')) {
+		return getSearchResults(doc, true) ? 'multiple' : false;
+	}
+	else {
+		var dType = detectType(doc, url);
+		if (dType) {
+			return dType;
+		}
+	}
+	
+	return false;
+}
+
+function getSearchResults(doc, checkOnly, itemInfo) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.book1');
+	for (let row of rows) {
+		let a = row.querySelector('td > table .px14');
+		if (!a) {
+			a = row.querySelector('a');
+		}
+		if (!a) {
+			continue;
+		}
+
+		if (checkOnly) return true;
+		
+		let url = a.href;
+
+		// Z.debug(url);
+		let title = ZU.trimInternal(a.textContent);
+		
+		found = true;
+		if (!found['']) {
+			items[''] = '【提醒：存在失败的可能，请隔几个小时后试试，或单个抓取。】';
+		}
+		
+		if (itemInfo) {
+			var download = row.querySelector('.get a');
+			if (download && download.textContent == 'PDF下载') {
+				itemInfo[url] = {
+					pdfurl: download.href
+				};
+			}
+		}
+		if (title.startsWith('《') && title.endsWith('》')) {
+			title = title.replace(/《|》/g, '');
+		}
+		
+		items[url] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		var itemInfo = {};
+		Zotero.selectItems(getSearchResults(doc, false, itemInfo), function (items) {
+			if (items) {
+				if (items['']) {
+					delete items[''];
+				}
+				scrapeItem(Object.keys(items), itemInfo);
+			}
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrapeItem(items, itemInfo) {
+	ZU.processDocuments(items, function (doc, url) {
+		scrape(doc, url, itemInfo[url] ? itemInfo[url].pdfurl : null);
+	});
+}
+
+function scrape(doc, url, pdfurl) {
+	if (!url || url.length <= 0) {
+		return;
+	}
+	
+	var itemType = detectType(doc);
+	var item = new Zotero.Item(itemType);
+
+	item.url = url;
+	switch (sourceType(doc)) {
+		case '图书':
+			item.title = text(doc, '.tutilte');
+			var infos = text(doc, '.tubox dl');
+			infos = trim(infos);
+			for (var section0 of infos.split('\n')) {
+				if (!section0.trim()) continue;
+		
+				let index = section0.indexOf('】');
+				if (index <= -1) continue;
+		
+				let key = section0.substr(0, index + 1).trim();
+				let value = section0.substr(index + 1).trim();
+				// Z.debug(key + ':' + value);
+				switch (key) {
+					case "【作　者】":
+						doPerson(item, value);
+						break;
+					case "【出版项】":
+						var vals = Object.values(value.split(/：|,/g));
+						item.publisher = vals[1];
+						item.date = vals[2];
+						break;
+					case "【ISBN号】":
+						item.ISBN = value;
+						break;
+					case "【形态项】":
+						item.numPages = value;
+						break;
+					case "【中图法分类号】":
+						item.archiveLocation = value.replace(/\(.*\)/, '');
+						break;
+						
+					default:
+						break;
+				}
+			}
+		
+			// 摘要
+			item.abstractNote = text(doc, '.tu_content').replace(/内容提要:\n*/g, '');
+			break;
+		case '期刊':
+			item.title = ZU.trimInternal(text(doc, 'h1.title'));
+			infos = doc.querySelectorAll('#m_top li');
+			for (var section1 of infos) {
+				let content = ZU.trimInternal(section1.textContent);
+				if (!content || content.length <= 0) continue;
+		
+				let index = content.indexOf('】');
+				if (index <= -1) continue;
+		
+				content = trim(content);
+				let key = content.substr(0, index + 1).trim();
+				let value = content.substr(index + 1).trim();
+				switch (key) {
+					case "【作 者】":
+						doPerson(item, value);
+						break;
+					case "【刊 名】":
+						item.publicationTitle = value;
+						break;
+					case "【期 号】":
+						item.issue = value;
+						break;
+					case "【出版日期】":
+						item.date = value;
+						break;
+					case "【摘 要】":
+						item.abstractNote = value;
+						break;
+					case "【关键词】":
+						doTag(item, value);
+						break;
+					case "【影响因子】":
+						item.extra = '影响因子: ' + value;
+						break;
+					default:
+						break;
+				}
+			}
+			break;
+		case '学位论文':
+			item.title = ZU.trimInternal(text(doc, 'h1.title'));
+			infos = doc.querySelectorAll('#m_top li');
+			for (var section5 of infos) {
+				let content = ZU.trimInternal(section5.textContent);
+				if (!content || content.length <= 0) continue;
+		
+				let index = content.indexOf('】');
+				if (index <= -1) continue;
+		
+				content = trim(content);
+				let key = content.substr(0, index + 1).trim();
+				let value = content.substr(index + 1).trim();
+				switch (key) {
+					case "【作 者】":
+						doPerson(item, value);
+						break;
+					case "【学位授予单位】":
+						item.university = value;
+						break;
+					case "【导师姓名】":
+						item.creators.push({
+							lastName: value,
+							creatorType: 'contributor',
+							fieldMode: 1
+						});
+						break;
+					case "【学位年度】":
+						item.date = value;
+						break;
+					case "【摘 要】":
+						item.abstractNote = value.replace(/隐藏更多/g, '');
+						break;
+					case "【关键词】":
+						doTag(item, value);
+						break;
+					case "【学位名称】":
+						item.type = value;
+						break;
+					default:
+						break;
+				}
+			}
+			break;
+		case '会议论文':
+			item.title = ZU.trimInternal(text(doc, 'h1.title'));
+			infos = doc.querySelectorAll('#m_top li');
+			for (var section3 of infos) {
+				let content = ZU.trimInternal(section3.textContent);
+				if (!content || content.length <= 0) continue;
+		
+				let index = content.indexOf('】');
+				if (index <= -1) continue;
+		
+				content = trim(content);
+				let key = content.substr(0, index + 1).trim();
+				let value = content.substr(index + 1).trim();
+				switch (key) {
+					case "【作 者】":
+						doPerson(item, value);
+						break;
+					case "【会议名称】":
+						item.conferenceName = value;
+						break;
+					case "【会议录名称】":
+						item.series = value;
+						break;
+					case "【日 期】":
+						item.date = value;
+						break;
+					case "【摘 要】":
+						item.abstractNote = value.replace(/隐藏更多/g, '');
+						break;
+					case "【关键词】":
+						doTag(item, value);
+						break;
+					case "【作者联系方式】":
+						item.place = value;
+						break;
+					default:
+						break;
+				}
+			}
+			break;
+		case '专利':
+			item.title = ZU.trimInternal(text(doc, 'h1.title'));
+			infos = doc.querySelectorAll('.content li');
+			for (var section4 of infos) {
+				let content = ZU.trimInternal(section4.textContent);
+				if (!content || content.length <= 0) continue;
+		
+				let index = content.indexOf('】');
+				if (index <= -1) continue;
+		
+				content = trim(content);
+				let key = content.substr(0, index + 1).trim();
+				let value = content.substr(index + 1).trim();
+				switch (key) {
+					case "【申请号】":
+						item.applicationNumber = value;
+						break;
+					case "【申请人】":
+						doInventor(item, value);
+						break;
+					case "【发明人】":
+						doInventor(item, value);
+						break;
+					case "【申请日期】":
+						item.filingDate = value;
+						break;
+					case "【地 址】":
+						item.place = value;
+						break;
+					case "【专利类型】":
+						item.extra = '专利类型: ' + value;
+						break;
+					case "【IPC号】":
+						item.extra += '; IPC号: ' + value;
+						break;
+					case "【摘 要】":
+						item.abstractNote = value;
+						break;
+					default:
+						break;
+				}
+			}
+			break;
+	}
+	
+	if (item.title.startsWith('《') && item.title.endsWith('》')) {
+		item.title = item.title.replace(/《|》/g, '');
+	}
+	
+	// 如果抓取失败，请配合油猴脚本使用：https://greasyfork.org/zh-CN/scripts/408790
+	if (pdfurl) {
+		item.attachments.push({
+			url: pdfurl,
+			title: 'Full Text PDF',
+			mimeType: 'application/pdf'
+		});
+	}
+	else {
+		var download = doc.querySelector('.link a');
+		if (download && download.textContent == 'PDF下载') {
+			item.attachments.push({
+				url: download.href,
+				title: 'Full Text PDF',
+				mimeType: 'application/pdf'
+			});
+		}
+	}
+	
+	item.complete();
+}

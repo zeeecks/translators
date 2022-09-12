@@ -1,0 +1,119 @@
+function detectWeb(doc, url) {
+	// can't go off URLs alone because some reports are under /news/
+	if (url.includes('/report/') || doc.querySelector('.report-header')) {
+		return "report";
+	}
+	else if (url.includes('world-report') || doc.querySelector('.wr-hero')) {
+		if (url.includes('/country-chapters/')) {
+			return "bookSection";
+		}
+		else {
+			return "book";
+		}
+	}
+	else if (doc.querySelector('.news-header')) {
+		return "blogPost";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('h3.media-block__title > a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		if (item.itemType == 'report') {
+			if (url.includes('/world-report/') || doc.querySelector('.wr-hero')) {
+				// world reports get the wrong title
+				item.title = text(doc, 'h1');
+			}
+			else {
+				// we only bother with subtitles for regular reports because they're
+				// just descriptions on news/briefings/blog posts/world reports.
+				let subtitle = text(doc, '.report-header__subtitle');
+				if (subtitle && !item.title.includes(': ')) {
+					item.title += `: ${subtitle}`;
+				}
+			}
+			
+			item.institution = 'Human Rights Watch';
+			
+			// HRW reports have ISBNs, but there's no way to get them from the page,
+			// only from some text in the PDF. Such a pain.
+			
+			if (item.abstractNote) {
+				item.abstractNote = item.abstractNote.replace(/^Summary\b/, '');
+			}
+		}
+		else if (item.itemType == 'bookSection') {
+			item.title = text(doc, 'h1');
+			let subtitle = text(doc, '.chapter-header__subtitle');
+			if (subtitle && !item.title.includes(': ')) {
+				item.title += `: ${subtitle}`;
+			}
+			
+			item.bookTitle = text(doc, 'header a[href*="/world-report/"]');
+		}
+		
+		if (['book', 'bookSection'].includes(item.itemType)) {
+			// can't get the publisher...
+			item.creators = [{
+				lastName: 'Human Rights Watch',
+				creatorType: 'author',
+				fieldMode: 1
+			}];
+		}
+		
+		let downloadLink = attr(doc, 'a.download-item-link, a.wr-hero__report-dl', 'href');
+		if (downloadLink) {
+			// replace snapshot
+			item.attachments = [
+				{
+					title: 'Full Text PDF',
+					mimeType: 'application/pdf',
+					url: downloadLink
+				}
+			];
+		}
+		
+		item.libraryCatalog = 'Human Rights Watch';
+		
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = detectWeb(doc, url);
+		trans.doWeb(doc, url);
+	});
+}

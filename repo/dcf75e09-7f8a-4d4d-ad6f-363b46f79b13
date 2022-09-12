@@ -1,0 +1,154 @@
+function detectWeb(doc, url) {
+	if (url.includes('/bib/')) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.nypl-results-item a.title');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, _url) {
+	let jsonText = Array.from(doc.querySelectorAll('script:not([src])'))
+		.map(el => el.textContent.trim().replace(/^[^{]*(\{.+\});$/, '$1'))
+		.find(text => text.startsWith('{'));
+	let bib = JSON.parse(jsonText).bib;
+	
+	// it's easiest we get MARC, but some items don't have it
+	if (bib.annotatedMarc.bib.fields.length) {
+		scrapeMARC(bib.annotatedMarc.bib.fields);
+	}
+	else {
+		scrapeNYPLMetadata(bib);
+	}
+}
+
+function scrapeMARC(fields) {
+	Z.debug('Using annotated MARC');
+	
+	// call MARC translator
+	var translator = Zotero.loadTranslator("import");
+	translator.setTranslator("a6ee60df-1ddc-4aae-bb25-45e0537be973");
+	translator.getTranslatorObject(function (marc) {
+		var record = new marc.record();
+		var item = new Zotero.Item();
+		// no leader
+		var fieldTag, indicators, fieldContent;
+		for (let field of fields) {
+			for (let value of field.values) {
+				let source = value.source;
+				fieldTag = source.marcTag;
+				indicators = source.ind1 + source.ind2;
+				fieldContent = '';
+				
+				for (let subfield of source.subfields || []) {
+					fieldContent += marc.subfieldDelimiter + subfield.tag
+						+ subfield.content;
+				}
+				
+				if (!fieldContent) {
+					fieldContent = source.content || '';
+				}
+	
+				record.addField(fieldTag, indicators, fieldContent);
+			}
+		}
+		
+		record.translate(item);
+
+		if (item.seriesNumber) {
+			item.seriesNumber = item.seriesNumber.replace(/^[^0-9]+/, '');
+		}
+		
+		item.complete();
+	});
+}
+
+// get the ith element of the array. if the array is null or there is no ith
+// element, return the empty string.
+function maybe(propertyArray, i = 0) {
+	return (propertyArray || [])[i] || '';
+}
+
+function scrapeNYPLMetadata(bib) {
+	Z.debug('Using NYPL metadata');
+	
+	let item = new Zotero.Item('book');
+	item.title = bib.title[0].split('/')[0]
+		.replace(' : ', ': ')
+		.replace(/\.$/, '');
+	item.abstractNote = maybe(bib.extent);
+	[item.series, item.seriesNumber] = maybe(bib.seriesStatement).split(';');
+	item.numberOfVolumes = maybe(item.abstractNote.match(/(\d+) v\./), 1);
+	item.place = maybe(bib.placeOfPublication).replace(/:\s*$/, '');
+	item.publisher = maybe(bib.publisherLiteral).replace(/,\s*$/, '');
+	item.date = ZU.strToISO(maybe(bib.dateString));
+	item.numPages = maybe(item.abstractNote.match(/(\d+) p/), 1);
+	item.language = (bib.language[0] || {})['@id'].replace('lang:', '');
+	item.ISBN = maybe(bib.idIsbn);
+	item.callNumber = (bib.items || []).map(result => result.shelfMark).join('; ');
+	
+	for (let creatorLit of bib.creatorLiteral || []) {
+		creatorLit = creatorLit.replace(/\([^)]+\)/, '');
+		item.creators.push(ZU.cleanAuthor(creatorLit, 'author', true));
+	}
+	
+	for (let creatorLit of bib.contributorLiteral || []) {
+		creatorLit = creatorLit.replace(/\([^)]+\)/, '');
+		let contributor = ZU.cleanAuthor(creatorLit, 'contributor', true);
+		
+		// search for any mention of the contributor's last name right after
+		// a word that looks like "translation"
+		let translated = bib.title[0].match(/trans(?:\.|lat(?:ion|ed by))[,:]?\s*([^.,/:]+)/i);
+		if (translated
+			&& translated[1].toLowerCase().includes(
+				contributor.lastName.toLowerCase())) {
+			contributor.creatorType = 'translator';
+		}
+		
+		item.creators.push(contributor);
+	}
+	
+	for (let creator of item.creators) {
+		if (!creator.firstName) {
+			delete creator.firstName;
+			creator.fieldMode = 1;
+		}
+	}
+
+	let uniformTitle = maybe(bib.uniformTitle).trim().replace(/[.,/:]$/, '');
+	if (uniformTitle && uniformTitle.endsWith('. English')) {
+		item.extra = 'original-title: '
+			+ uniformTitle.substring(0, uniformTitle.length - '. English'.length);
+	}
+	
+	item.tags = (bib.subjectLiteral || []).map(tag => ({ tag }));
+	
+	item.complete();
+}

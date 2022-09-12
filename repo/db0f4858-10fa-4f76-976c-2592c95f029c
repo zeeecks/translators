@@ -1,0 +1,201 @@
+function detectWeb(doc, url) {
+	var icon = ZU.xpathText(doc, '//div[@class="left-icon"]/span[contains(@class, "iconochive")]/@class');
+	if (icon) {
+		if (icon.includes("texts")) {
+			return "book";
+		}
+		else if (icon.includes("movies")) {
+			return "film";
+		}
+		else if (icon.includes("audio")) {
+			return "audioRecording";
+		}
+		else if (icon.includes("etree")) {
+			return "audioRecording";
+		}
+		else if (icon.includes("software")) {
+			return "computerProgram";
+		}
+		else if (icon.includes("image")) {
+			return "artwork";
+		}
+		else if (icon.includes("tv")) {
+			return "tvBroadcast";
+		}
+		else {
+			Z.debug("Unknown Item Type: " + icon);
+		}
+	}
+	else if (url.includes('/stream/')) {
+		return "book";
+	}
+	else if (getSearchResults(doc, url, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+var typemap = {
+	texts: "book",
+	movies: "film",
+	image: "artwork",
+	audio: "audioRecording",
+	etree: "audioRecording",
+	software: "computerProgram"
+};
+
+function test(data) {
+	var clean = data ? data[0] : undefined;
+	return clean;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//div[@class="results"]//div[contains(@class, "item-ttl")]//a[@href]');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function scrape(doc, url) {
+	// maximum PDF size to be downloaded. default to 10 MB
+	var prefMaxPdfSizeMB = 10;
+	var pdfurl = ZU.xpathText(doc, '//div[contains(@class, "thats-right")]/div/div/a[contains(text(), "PDF") and not(contains(text(), "B/W"))]/@href');
+	var pdfSize = ZU.xpathText(doc, '//div[contains(@class, "thats-right")]/div/div/a[contains(text(), "PDF") and not(contains(text(), "B/W"))]/@data-original-title');
+	var canonicalurl = ZU.xpathText(doc, '//link[@rel="canonical"]/@href');
+	var apiurl;
+	if (canonicalurl) {
+		apiurl = canonicalurl + "&output=json";
+		// alternative is
+		// var apiurl = url.replace('/details/', '/metadata/').replace('/stream/', '/metadata/');
+	}
+	else {
+		apiurl = url.replace('/stream/', '/details/').replace(/#.*$/, '') + "&output=json";
+	}
+	ZU.doGet(apiurl, function (text) {
+		try {
+			var obj = JSON.parse(text).metadata;
+		}
+		catch (e) {
+			Zotero.debug("JSON parse error");
+			throw e;
+		}
+		var type = obj.mediatype[0];
+		var itemType = typemap[type] || "document";
+		if (type == "movies" && obj.collection.includes("tvarchive")) {
+			itemType = "tvBroadcast";
+		}
+		
+		var newItem = new Zotero.Item(itemType);
+		
+		newItem.title = obj.title[0];
+		var creators = obj.creator;
+		var i;
+		if (creators) {
+			// sometimes authors are in one field delimiter by ;
+			if (creators && creators[0].match(/;/)) {
+				creators = creators[0].split(/\s*;\s*/);
+			}
+			for (i = 0; i < creators.length; i++) {
+				// authors are lastname, firstname, additional info - only use the first two.
+				var author = creators[i].replace(/(,[^,]+)(,.+)/, "$1");
+				if (author.includes(',')) {
+					newItem.creators.push(ZU.cleanAuthor(author, "author", true));
+				}
+				else {
+					newItem.creators.push({ lastName: author, creatorType: "author", fieldMode: 1 });
+				}
+			}
+		}
+		var contributors = obj.contributor;
+		if (contributors) {
+			for (i = 0; i < contributors.length; i++) {
+				// authors are lastname, firstname, additional info - only use the first two.
+				var contributor = contributors[i].replace(/(,[^,]+)(,.+)/, "$1");
+				if (contributor.includes(',')) {
+					newItem.creators.push(ZU.cleanAuthor(contributor, "contributor", true));
+				}
+				else {
+					newItem.creators.push({ lastName: contributor, creatorType: "contributor", fieldMode: 1 });
+				}
+			}
+		}
+
+		for (i = 0; i < newItem.creators.length; i++) {
+			if (!newItem.creators[i].firstName) {
+				newItem.creators[i].fieldMode = 1;
+			}
+		}
+		// abstracts can be in multiple fields;
+		if (obj.description) newItem.abstractNote = ZU.cleanTags(obj.description.join("; "));
+
+		var date = obj.date || obj.year;
+		
+		var tags = test(obj.subject);
+		if (tags) {
+			tags = tags.split(/\s*;\s*/);
+			for (i = 0; i < tags.length; i++) {
+				newItem.tags.push(tags[i]);
+			}
+		}
+		
+		// download PDFs; We're being conservative here, only downloading if we understand the filesize
+		if (pdfurl && pdfSize && parseFloat(pdfSize)) {
+			// calculate file size in MB
+			var pdfSizeMB;
+			if (pdfSize.includes("M")) {
+				pdfSizeMB = parseFloat(pdfSize);
+			}
+			else if (pdfSize.includes("K")) {
+				pdfSizeMB = parseFloat(pdfSize) / 1000;
+			}
+			else if (pdfSize.includes("G")) {
+				pdfSizeMB = parseFloat(pdfSize) * 1000;
+			}
+			Z.debug(pdfSizeMB);
+			if (pdfSizeMB < prefMaxPdfSizeMB) {
+				newItem.attachments.push({ url: pdfurl, title: "Internet Archive Fulltext PDF", mimeType: "application/pdf" });
+			}
+		}
+		newItem.date = test(date);
+		newItem.medium = test(obj.medium);
+		newItem.publisher = test(obj.publisher);
+		newItem.language = test(obj.language);
+		newItem.callNumber = test(obj.call_number);
+		newItem.numPages = test(obj.imagecount);
+		newItem.runningTime = test(obj.runtime);
+		newItem.rights = test(obj.licenseurl);
+		if (!newItem.rights) newItem.rights = test(obj.rights);
+		if (Array.isArray(obj.isbn) && obj.isbn.length > 0) newItem.ISBN = (obj.isbn).join(' ');
+		newItem.url = "http://archive.org/details/" + test(obj.identifier);
+
+		newItem.complete();
+	});
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}

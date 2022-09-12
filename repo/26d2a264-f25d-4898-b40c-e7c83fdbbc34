@@ -1,0 +1,121 @@
+function detectWeb(doc, url) {
+	if (url.includes('/documents/obj/')) {
+		return "artwork";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.listItem');
+	for (let row of rows) {
+		let href = attr(row, '.listItemThumbnail a', 'href');
+		let title = ZU.trimInternal(text(row, '.description a'));
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) {
+				Object.keys(items).forEach(scrape);
+			}
+		});
+	}
+	else {
+		// scrape() wants a link to an image page, not a metadata page, because
+		// only image page URLs have the ID we need. so if we're on a metadata
+		// page, we just grab the link to the image page.
+		scrape(attr(doc, '.listItemThumbnail a', 'href') || url);
+	}
+}
+
+function scrape(url) {
+	let slug = url.match(/\/obj\/[^/?]+\/([^/?]+)/);
+	if (slug) {
+		let jsonURL = `https://iiif.arthistoricum.net/proxy/fotothek/${slug[1]}/manifest.json`;
+		ZU.doGet(jsonURL, function (json) {
+			scrapeManifest(json);
+		});
+	}
+	else {
+		throw new Error('Could not determine JSON URL');
+	}
+}
+
+function scrapeManifest(manifestJSON) {
+	let manifest = JSON.parse(manifestJSON);
+	let item = new Zotero.Item('artwork');
+	
+	item.title = manifest.label;
+	if (item.title.startsWith('Serie:') && item.title.split(';').length > 1) {
+		item.title = item.title.split(';')[1];
+	}
+	
+	item.abstractNote = manifest.description;
+	if (item.abstractNote) {
+		item.abstractNote = item.abstractNote.replace('Serie: Serie:', 'Serie:');
+	}
+	
+	item.artworkMedium = 'Photograph';
+	
+	for (let { label, value } of manifest.metadata) {
+		switch (label) {
+			case 'Urheber':
+				if (value.startsWith('n.a.')) {
+					// no personal author
+					item.creators.push({
+						lastName: value.replace(/n\.a\.;?\s*/, ''),
+						creatorType: 'artist',
+						fieldMode: 1
+					});
+				}
+				else {
+					// is this worth it? i'm not sure. but the catalog has a lot
+					// of misbracketed von-names
+					value = value.replace(/(\w+),\s*(\w+)\s+(von|van|de|St\.)\s*$/, '$3 $1, $2');
+					item.creators.push(ZU.cleanAuthor(value, 'artist', true));
+				}
+				break;
+			case 'Datierung':
+				item.date = ZU.strToISO(value);
+				break;
+			case 'Schlagwörter':
+				item.tags = value.split(';').map(tag => ({ tag: tag.trim() }));
+				break;
+			case 'Physische Beschreibung':
+				if (!item.abstractNote) {
+					item.abstractNote = value;
+				}
+				break;
+		}
+	}
+	
+	if (manifest.sequences) {
+		for (let sequence of manifest.sequences) {
+			if (!sequence.canvases) continue;
+			for (let canvas of sequence.canvases) {
+				if (!canvas.images) continue;
+				for (let image of canvas.images) {
+					if (!image.resource) continue;
+					item.attachments.push({
+						title: 'Full-Size Scan',
+						mimeType: image.resource.format.replace('images', 'image'),
+						url: image.resource['@id']
+					});
+				}
+			}
+		}
+	}
+	
+	item.complete();
+}

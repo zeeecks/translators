@@ -1,0 +1,128 @@
+function detectWeb(doc, url) {
+	if (url.includes('/item/')) {
+		let itemType = text(doc, '#item-type a').trim();
+		switch (itemType) {
+			case 'Books':
+				return 'book';
+			case 'Journals':
+				return 'book'; // entire journal issue
+			case 'Manuscripts':
+				return 'manuscript';
+			case 'Maps':
+				return 'map';
+			case 'Motion Pictures':
+				return 'film';
+			case 'Newspapers':
+				return 'book'; // entire newspaper
+			case 'Prints, Photographs':
+				return 'artwork';
+			case 'Sound Recordings':
+				if (/\binterview\b/i.test(doc.title)) {
+					return 'interview';
+				}
+				return 'audioRecording';
+			default:
+				Z.debug(`Unmapped type: ${itemType}`);
+				return 'book';
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.body > a.title');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item(detectWeb(doc, url));
+	
+	let main = doc.querySelector('main');
+	
+	item.title = text(main, '[itemprop="name"]');
+	let originalTitle = text(main, '#original-title');
+	if (originalTitle) item.title = `${item.title} (${originalTitle})`;
+	
+	item.abstractNote = text(main, '[itemprop="description"]');
+	item.date = ZU.strToISO(attr(main, '[itemprop="dateCreated"]', 'datetime'));
+	item.publisher = text(main, '[itemprop="publisher"]');
+	item.place = text(main, '.place-of-publication');
+	
+	item.tags = [...doc.querySelectorAll('[itemprop="keywords"]')]
+		.map(kw => ({ tag: kw.innerText }));
+	
+	item.creators = [...doc.querySelectorAll('[itemprop="creator"]')]
+		.map(creator => ZU.cleanAuthor(
+			creator.innerText,
+			{
+				map: 'cartographer',
+				artwork: 'artist',
+				film: 'contributor',
+				audioRecording: 'contributor',
+				interview: 'contributor' // too complicated to figure out from the page
+			}[item.itemType] || 'author',
+			true
+		));
+	
+	item.url = attr(doc, 'link[rel="canonical"]', 'href');
+	
+	let attachmentLink = doc.querySelector('a[href$=".pdf"]');
+	let mimeType = 'application/pdf';
+	let label = 'Full Text PDF';
+	
+	if (!attachmentLink) {
+		attachmentLink = doc.querySelector('a[href$=".mp3"]');
+		mimeType = 'audio/mpeg';
+		label = 'Audio';
+	}
+	
+	if (!attachmentLink) {
+		attachmentLink = doc.querySelector('a[href$=".mp4"]');
+		mimeType = 'video/mp4';
+		label = 'Video';
+	}
+	
+	if (attachmentLink) {
+		let maybeSize = (text(attachmentLink, '.badge').match(/([0-9.])/) || [])[1];
+		if (maybeSize && parseFloat(maybeSize) >= 100) {
+			item.attachments.push({
+				title: `${label} (too large)`,
+				mimeType: mimeType,
+				url: ''
+			});
+		}
+		else {
+			item.attachments.push({
+				title: label,
+				mimeType: mimeType,
+				url: attachmentLink.href
+			});
+		}
+	}
+	
+	item.complete();
+}

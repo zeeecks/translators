@@ -1,0 +1,77 @@
+function detectWeb(doc, url) {
+	if (doc.querySelector('article.article')) {
+		return "magazineArticle";
+	}
+	else if (url.includes('/search/') && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//li//a[h4]');
+	for (let row of rows) {
+		var href = row.href;
+		var title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var data = text(doc, 'script[type="application/ld+json"]');
+	var json = JSON.parse(data);
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		if (item.creators.length <= 1 && json.author) {
+			item.creators = [];
+			// json.author can either be an array, or a object containing an array
+			if (Array.isArray(json.author)) {
+				for (let author of json.author) {
+					item.creators.push(ZU.cleanAuthor(author.name, "author"));
+				}
+			}
+			else if (json.author.name) {
+				for (let name of json.author.name) {
+					item.creators.push(ZU.cleanAuthor(name, "author"));
+				}
+			}
+		}
+		
+		item.publicationTitle = 'The New Yorker';
+		item.date = ZU.strToISO(json.dateModified || json.datePublished);
+		item.section = json.articleSection;
+		item.ISSN = "0028-792X";
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = "magazineArticle";
+		trans.doWeb(doc, url);
+	});
+}

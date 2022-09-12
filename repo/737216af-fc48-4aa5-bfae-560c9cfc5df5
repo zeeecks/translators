@@ -1,0 +1,28 @@
+function detectWeb(doc, url) { 
+		return FW.detectWeb(doc, url);
+}
+function doWeb(doc, url) { return FW.doWeb(doc, url); }
+
+
+/** Articles */
+FW.Scraper({ itemType         : 'newspaperArticle',
+			 detect           : FW.Xpath('//div[@class="block_div"]/div/*[@class="article_title"]'),
+			 title            : FW.Xpath('//div[@class="block_div"]/div/*[@class="article_title"]').text().trim(),
+			 attachments      : [ {
+				 	url : FW.Url().replace(/article/,"print"),
+				 	type: "text/html",
+				 	title: "APN.ru Printable" }],
+			 creators         : FW.Xpath('//div[@class="block_div"]/div/a[@class="pub_aname"]').text().cleanAuthor("author"),
+			 date 	      : FW.Xpath('//div[@class="block_div"]/div/span[@class="pub_date"]').text(),
+			 publicationTitle : "Агенство политических новостей" 
+  });
+
+
+/** Search results */
+FW.MultiScraper({ itemType  : "multiple",
+			 	  detect    : FW.Xpath('//div[@class="search_content"]'),
+			 	  choices : {
+				 	titles    : FW.Xpath('//div[@class="search_content"]/div/a[@class="searchtitle"]').text(),
+			 	  	urls    : FW.Xpath('//div[@class="search_content"]/div/a[@class="searchtitle"]').key('href').text()
+			 	  }
+});

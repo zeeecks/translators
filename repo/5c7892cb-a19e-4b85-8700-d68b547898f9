@@ -1,0 +1,26 @@
+function detectWeb(doc, url) { return FW.detectWeb(doc, url); }
+function doWeb(doc, url) { return FW.doWeb(doc, url); }
+
+FW.Scraper({
+itemType	: 'newspaperArticle',
+detect		: FW.Xpath('.//h1[@itemprop="name headline"]'),
+title		: FW.Xpath('.//h1[@itemprop="name headline"]').text().trim(),
+attachments : [ {url: FW.Url(),
+  title: FW.Xpath('//meta[@name="application-name"]/@content').text().append( " Printable"),
+  type:  "text/html",
+}],
+date		: FW.Xpath('//*[@id="content"]/main/article/header//time').text().trim(),
+creators	: FW.Xpath('//h5[@itemprop="name"]').text().split(/,\s+|\s+and\s+/).cleanAuthor("Author"),
+publicationTitle : FW.Xpath('//meta[@name="application-name"]/@content').text(),
+libraryCatalog : FW.Xpath('//meta[@name="application-name"]/@content').text(),
+language    : FW.Xpath('//meta[@property="og:locale"]/@content').text()
+})
+
+FW.MultiScraper({
+itemType	: 'multiple',
+detect		: FW.Url().match(/search\?text=/),
+choices		: {
+  titles: FW.Xpath('//article[@class="story story--hero has-wof"]/h3/a').text().trim(),
+  urls:   FW.Xpath('//article[@class="story story--hero has-wof"]/h3/a').key("href"),
+}
+})

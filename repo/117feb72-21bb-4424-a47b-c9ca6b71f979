@@ -1,0 +1,85 @@
+/**
+	Copyright (c) 2012 Sebastian Karcher
+	
+	This program is free software: you can redistribute it and/or
+	modify it under the terms of the GNU Affero General Public License
+	as published by the Free Software Foundation, either version 3 of
+	the License, or (at your option) any later version.
+	
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+	Affero General Public License for more details.
+	
+	You should have received a copy of the GNU Affero General Public
+	License along with this program. If not, see
+	<http://www.gnu.org/licenses/>.
+*/
+
+function detectWeb(doc, url) {
+	if (url.indexOf("/search?") != -1) return "multiple";
+
+	else if (url.indexOf("/item/") != -1) {
+		var type = ZU.xpathText(doc, '//article[@id="content"]//div[@class="table"]/ul/li[h6[contains(text(), "Type")]]/following-sibling::li')
+		//Z.debug(type)
+		//we can't use the typemap below, as the types get merged together when scraping them
+		if (type){
+			if (type.search(/^(image|physical)/) != -1) return "artwork";
+			else if (type.search(/^(image|physical)/) != -1) return "artwork";
+			else if (type.search(/^sound/) != -1) return "audioRecording";
+			else if (type.search(/^moving/) != -1) return "film";
+			else if (type.search(/^software/) != -1) return "computerProgram";
+			else if (type.search(/^(dataset|interactive)/) != -1) return "webpage";
+			else return "book";
+		}
+		else return "book";
+	}
+}
+
+function doWeb(doc, url) {
+	//take this code mostly from pubmed, which has a very similar API structure
+	if (detectWeb(doc, url) == "multiple") {
+		var results = ZU.xpath(doc, '//div[@class="search"]//h4/a[contains(@href, "/item/")]');
+		var items = {};
+		var title, id;
+		for (var i = 0, n = results.length; i < n; i++) {
+			title = results[i].textContent;
+			id = results[i].href.match(/item\/([^\?]+)/)[1]
+
+			if (id && title) {
+				// Keys must be strings. Otherwise, Chrome sorts numerically instead of by insertion order.
+				items["j" + id] = title;
+			}
+		}
+
+		Zotero.selectItems(items, function (selectedItems) {
+			if (!selectedItems) return true;
+
+			var ids = [];
+			for (var i in selectedItems) {
+				ids.push(i.substr(1));
+			}
+			getJSON(ids);
+		});
+	} else {
+		var id = url.match(/item\/([^\?]+)/)[1];
+		getJSON([id]);
+	}
+}
+
+function getJSON(ids) {
+	Z.debug(ids)
+	var JASONurl = "http://api.dp.la/v2/items/" + ids.join(",") + "?api_key=910de961922b85c6e95ee1311938ece6";
+	Zotero.Utilities.doGet(JASONurl, parseDPLAapi);
+}
+
+var typemap = {
+	"image": "artwork",
+	"physical object": "artwork",
+	"text": "book",
+	"collection": "book",
+	"moving image": "film",
+	"interactive resource": "webpage",
+	"dataset": "webpage",
+	"software": "computerProgram",
+	"sound": "audioRecording

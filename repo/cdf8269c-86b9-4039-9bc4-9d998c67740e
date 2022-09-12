@@ -1,0 +1,88 @@
+/**
+	Copyright (c) 2012-2019 Aurimas Vinckevicius, Emiliano Heyns
+	
+	This program is free software: you can redistribute it and/or
+	modify it under the terms of the GNU Affero General Public License
+	as published by the Free Software Foundation, either version 3 of
+	the License, or (at your option) any later version.
+	
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+	Affero General Public License for more details.
+	
+	You should have received a copy of the GNU Affero General Public
+	License along with this program. If not, see
+	<http://www.gnu.org/licenses/>.
+*/
+
+// eslint-disable-next-line
+function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null;}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null;}
+
+function detectWeb(doc, _url) {
+	if (doc.querySelector('ul.volume_toc li')) return 'multiple';
+	if (doc.querySelector('.ref_on_top')) return 'journalArticle';
+	return false;
+}
+
+function returnMatch(t, r) {
+	let m = t.match(r);
+	return m ? m[1] : '';
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item('journalArticle');
+	item.url = url;
+	item.title = ZU.capitalizeTitle(ZU.trimInternal(text(doc, '#content h1') || ''));
+
+	item.creators = (text(doc, 'div#content p.author a') || text(doc, 'div#content p.author')).split(' et ').map(author => ZU.cleanAuthor(author.trim(), 'author'));
+	item.abstractNote = text(doc, 'p.abstract');
+
+	let refOnTop = (text(doc, 'div.ref_on_top') || '').trim();
+	item.volume = returnMatch(refOnTop, /volume (\d+)/i);
+	item.pages = returnMatch(refOnTop, /(\d+(?:–\d+)?)$/);
+
+	item.ISSN = '1565-8872';
+
+	item.attachments = [];
+	let m = url.match(/^(https?:\/\/www\.verniana\.org\/volumes\/[0-9]+\/)[^/]+(\/[^.]+)\.html$/);
+	if (m) {
+		item.attachments = [
+			{
+				url: m[1] + 'A4' + m[2] + '.pdf',
+				title: 'Full text PDF',
+				mimeType: 'application/pdf'
+			},
+			{
+				url: m[1] + 'HTML' + m[2] + '.html',
+				title: 'Snapshot',
+				mimeType: 'text/html'
+			},
+		];
+	}
+
+	item.complete();
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) === 'multiple') {
+		let items = {};
+		for (let item of doc.querySelectorAll('ul.volume_toc li')) {
+			let title = text(item, '.title');
+			if (!title) continue;
+
+			let a = Array.from(item.querySelectorAll('a')).find(a => a.textContent === 'HTML');
+			if (!a) continue;
+
+			let href = a.getAttribute('href');
+			if (href) items[href] = title;
+		}
+
+		Zotero.selectItems(items, function (items) {
+			ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}

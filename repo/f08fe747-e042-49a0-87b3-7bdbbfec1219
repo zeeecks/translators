@@ -1,0 +1,81 @@
+function detectWeb(doc, _url) {
+	if (doc.querySelector('.siteArticleShare a[href*="/gencitation.asp?"]')) {
+		return "journalArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('td > a[href*="jvi.aspx?"][href*="un="]');
+	for (let row of rows) {
+		// TODO: check and maybe adjust
+		let href = row.href;
+		// TODO: check and maybe adjust
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let risURL = attr(doc, '.siteArticleShare a[href*="/gencitation.asp?"][href*="format=RIS"]', 'href');
+	if (!risURL) {
+		risURL = attr(doc, '.siteArticleShare a[href*="/gencitation.asp?"]', 'href')
+			.replace(/([?&]format=)[^&#]+/, '$1RIS');
+	}
+
+	let pdfURL = attr(doc, '.siteArticleShare a[href*="download_fulltext.asp?"]', 'href');
+	
+	let topRow = text(doc, '.siteTopRow');
+	let ISSN = topRow.match(/ISSN\s+(\d{4}-\d{3}[\dX])/);
+	ISSN = ISSN && ZU.cleanISSN(ISSN[1]);
+	
+	ZU.doGet(risURL, function (text) {
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(text);
+		translator.setHandler("itemDone", function (obj, item) {
+			delete item.journalAbbreviation; // usually not a common abbreviation
+			
+			if (!item.ISSN) {
+				item.ISSN = ISSN;
+			}
+			
+			item.notes = [];
+			
+			if (pdfURL) {
+				item.url = url.replace(/#.*$/, '').replace(/&look4=[^&]*/, '');
+				item.attachments.push({
+					url: pdfURL,
+					title: "Full Text PDF",
+					mimeType: "application/pdf"
+				});
+			}
+			else if (item.url && item.url.includes('dx.doi.org')) {
+				delete item.url;
+			}
+			
+			item.complete();
+		});
+		translator.translate();
+	});
+}

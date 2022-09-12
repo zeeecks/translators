@@ -1,0 +1,132 @@
+function detectWeb(doc, url) {
+	if (url.includes('/library/')) {
+		return 'document';
+	}
+	else if (url.endsWith('.edu') || url.endsWith('.edu/') || url.includes('admin/content')) {
+		return 'multiple';
+	}
+	return false;
+}
+
+
+ function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a[href*="/library/"]');
+	for (let row of rows) {
+		href = row.href;
+		title = ZU.trimInternal(row.text);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == 'multiple') {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var type = itemType(doc.querySelector('a[href*="ypfsresourcelibrary"]').href);
+	var item = new Zotero.Item(type[0]);
+	var pub = ZU.xpathText(doc, '//dl[@class="ypfs-case__details"]/dt[contains(., "Publisher")]/following-sibling::dd[1]/a');
+	var lang = ZU.xpathText(doc, '//dl[@class="ypfs-case__details"]/dt[contains(., "Language")]/following-sibling::dd[1]/a');
+	
+	item.title = doc.querySelector('#block-ypfs-theme-page-title').innerText;
+	item.date = ZU.xpathText(doc, '//dl[@class="ypfs-case__details"]/dt[contains(., "Date")]/following-sibling::dd[1]');
+	item.abstractNote = ZU.xpathText(doc, '//dl[@class="ypfs-case__details"]/dt[contains(., "Information")]/following-sibling::dd[1]');
+	item.publisher = pub.replace(/.*: | \(.*\)/g, "");
+	item.language = getLocale(lang);
+	item.url = doc.querySelector('link[rel="shortlink"]').href;
+	item.archive = 'Yale Program on Financial Stability Resource Library';
+	item.extra = type[3];
+	
+	item.creators = [];
+	for (i=1; i<=ZU.xpath(doc, '//dl[@class="ypfs-case__details"]/dt[contains(., "Author")]/following-sibling::dd[1]/a').length; i++) {
+		auth = ZU.xpathText(doc, '//dl[@class="ypfs-case__details"]/dt[contains(., "Author")]/following-sibling::dd[1]/a'.concat("[", i, "]"));
+		item.creators.push(ZU.cleanAuthor(auth.replace(/.*: | \(.*\)/g, ""), "author", true));
+	}
+	
+	item.attachments = [{
+		url: doc.querySelector('a[href*="ypfsresourcelibrary"]').href,
+		mimeType: type[1],
+		title: type[2]
+	}];
+	
+	item.tags = [
+		{tag: ZU.xpathText(doc, '//dl[@class="ypfs-case__details"]/dt[contains(., "Crisis")]/following-sibling::dd[1]/a')},
+		{tag: ZU.xpathText(doc, '//dl[@class="ypfs-case__details"]/dt[contains(., "Case Series")]/following-sibling::dd[1]/a')},
+		{tag: ZU.xpathText(doc, '//dl[@class="ypfs-case__details"]/dt[contains(., "Country")]/following-sibling::dd[1]/a')}
+		];
+
+	item.complete();
+}
+
+function itemType(href) {
+	switch (href.split(/\./).pop()) {
+		case "pdf":
+			return ['document', 'application/pdf', 'Full Text PDF'];
+		case "xlsx":
+			return ['document', 'application/vnd.ms-excel', 'Excel Workbook', 'type: dataset'];
+		case "xls":
+			return ['document', 'application/vnd.ms-excel', 'Excel Workbook', 'type: dataset'];
+		case "xlsm":
+			return ['document', 'application/vnd.ms-excel.sheet.macroEnabled.12', 'Macro-enabled Excel Workbook', 'type: dataset'];
+		case "doc":
+			return ['document', 'application/vnd.ms-word', 'Word Document'];
+		case "docx":
+			return ['document', 'application/vnd.ms-word', 'Word Document'];
+		case "pptx":
+			return ['presentation', 'application/vnd.ms-powerpoint', 'Powerpoint'];
+		case "mp3":
+			return ['audioRecording', 'audio/mpeg', 'Audio Recording'];
+		case "mp4":
+			return ['document', 'application/mp4', 'mp4 Recording'];
+		case "wma":
+			return ['audioRecording', 'audio/x-ms-wwma', 'Audio Recording'];
+		case "mov":
+			return ['videoRecording', 'video/quicktime', 'Video Recording'];
+	}
+}
+
+function getLocale(lang) {
+	return {
+		Arabic: 'ar',
+		Bulgarian: 'bg',
+		Danish: 'da',
+		Dutch: 'nl',
+		English: 'en',
+		Finnish: 'fi',
+		French: 'fr',
+		German: 'de',
+		Hungarian: 'hu',
+		Icelandic: 'is',
+		Japanese: 'jp',
+		Korean: 'kr',
+		Mongolian: 'mn',
+		Polish: 'pl',
+		Portugese: 'pt',
+		Slovene: 'sl',
+		Spanish: 'es',
+		Swedish: 'sv',
+		Thai: 'th',
+		Turkish: 'tr',
+	}[lang] || lang;
+}

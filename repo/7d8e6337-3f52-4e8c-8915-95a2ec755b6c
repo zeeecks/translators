@@ -1,0 +1,87 @@
+function detectWeb(doc, url) {
+	if (url.includes('/publication-detail/')
+		&& (doc.querySelector('.col-isbn') || doc.querySelector('.col-doi'))) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.search-results-items a.documentDetailLink');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title || !href.includes('/publication-detail/')) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc) {
+	// we would ideally just grab the "Metadata RDF" file here, but it doesn't
+	// give us RDF that Zotero can do anything with. the official metadata
+	// service (opac.publications.europa.eu) doesn't seem especially reliable.
+	// so we'll instead try ISBN and DOI.
+	
+	let pdfLinks = doc.querySelectorAll('a.download');
+	let search = Zotero.loadTranslator("search");
+	
+	let DOI = ZU.cleanDOI(text(doc, '.col-doi .detail-value'));
+
+	let item;
+
+	search.setHandler("translators", function (obj, translators) {
+		search.setTranslator(translators);
+		search.setHandler("itemDone", function (obj, lookupItem) {
+			item = lookupItem;
+			item.creators = [...doc.querySelectorAll('span[itemprop="author"]')]
+				.map(span => ZU.cleanAuthor(span.innerText, 'author', true));
+			item.title = item.title.replace(/[.,:;]+$/, '');
+			item.ISBN = text('.col-isbn .detail-value');
+			item.libraryCatalog = item.publisher = text(doc,
+				'.site-main-logo span.screen-readers-only'); // localized
+			// sometimes there are separate catalogue numbers for the PDF and
+			// paper versions, but grabbing the first (PDF) is fine; either one
+			// brings up the same document in the catalog.
+			item.callNumber = text(doc, '.col-catalogueNumber .detail-value');
+			item.abstractNote = text('.visible-description')
+				+ ' ' + text('.show-more-description');
+			for (let link of pdfLinks) {
+				// most documents seem to have 1-3 PDFs for different languages;
+				// if there are more languages available, they'll all be bundled
+				// together as one file. so downloading all of them shouldn't be
+				// overwhelming, and it's better than making assumptions or
+				// asking for user input.
+				item.attachments.push({
+					url: link.href,
+					title: `Full Text PDF (${link.dataset.language})`,
+					mimeType: "application/pdf"
+				});
+			}
+		});
+		search.translate();
+	});
+	search.setHandler("done", function () {
+		item.complete();
+	});
+	search.setSearch({ DOI });
+	search.getTranslators();
+}

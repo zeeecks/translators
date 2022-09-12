@@ -1,0 +1,124 @@
+function detectWeb(doc, url) {
+	if (url.includes("/item/")) {
+		return "artwork";
+	}
+	else if (url.includes("/search/") && getRecords(doc).length) {
+		return "multiple";
+	}
+	return false;
+}
+
+function scrape(doc, url) {
+	var id = url.match(/item\/(O[0-9]+)/i)[1];
+
+	var apiUrl = "https://api.vam.ac.uk/v2/museumobject/" + id;
+	Zotero.Utilities.doGet(apiUrl, function (respText) {
+		var museumobject = JSON.parse(respText);
+		var data = museumobject.record;
+		var item = new Zotero.Item("artwork");
+		if (data.titles.length > 0) {
+			item.title = data.titles[0].title;
+			item.shortTitle = data.objectType;
+		}
+		else if (data.objectType) {
+			item.title = data.objectType;
+			item.shortTitle = data.objectType;
+		}
+
+		item.abstractNote = data.briefDescription;
+		item.medium = data.materialsAndTechniques;
+		item.artworkSize = data.dimensionsNote;
+		if (data.productionDates.length > 1) {
+			item.date = data.productionDates[0].date.text;
+		}
+		else if (data.productionDates.length > 0) {
+			item.date = data.productionDates[0].date.text;
+		}
+
+		let collection = text(doc, 'a[href*="/search/?id_collection="]')
+			|| data.collectionCode.text;
+		item.archive = `Victoria & Albert Museum ${collection}`;
+		item.libraryCatalog = 'Victoria & Albert Museum';
+		item.callNumber = data.accessionNumber;
+		item.rights = data.creditLine;
+		item.url = url;
+
+
+		var artistMakerPerson = data.artistMakerPerson;
+		for (var i = 0; i < artistMakerPerson.length; i++) {
+			// This is not ideal and assume surname, firstnames convention is correct
+			var fullName = artistMakerPerson[i].name.text;
+			var lastComma = fullName.lastIndexOf(",");
+			var firstName = "";
+			var lastName = "";
+
+			if (lastComma > 0) {
+				lastName = fullName.substring(0, lastComma);
+				firstName = fullName.substring(lastComma + 1);
+			}
+			else {
+				firstName = fullName;
+			}
+
+			firstName = firstName
+				.replace('(Senior)', 'Sr.')
+				.replace('(Junior)', 'Jr.');
+
+			item.creators.push({
+				lastName: lastName,
+				firstName: firstName,
+				creatorType: "author"
+			});
+		}
+
+		var artistMakerPeople = data.artistMakerPeople;
+		for (var j = 0; j < artistMakerPeople.length; j++) {
+			item.creators.push({
+				lastName: artistMakerPeople[j].name.text,
+				fieldMode: 1,
+				creatorType: "author"
+			});
+		}
+
+		var artistMakerOrganisations = data.artistMakerOrganisations;
+		for (var k = 0; k < artistMakerOrganisations.length; k++) {
+			item.creators.push({
+				lastName: artistMakerOrganisations[k].name.text,
+				fieldMode: 1,
+				creatorType: "author"
+			});
+		}
+
+		item.attachments.push({
+			document: doc,
+			title: "Snapshot"
+		});
+
+		item.complete();
+	});
+}
+
+function getRecords(doc) {
+	return ZU.xpath(doc, '//figure[contains(@class, "b-object-card--etc")]//a');
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		var artworks = {};
+
+		var items = getRecords(doc);
+
+		for (var item in items) {
+			var title = ZU.xpathText(items[item], './/div[@class="b-object-card__caption"]');
+			var href = items[item].href;
+			artworks[href] = title;
+		}
+		Zotero.selectItems(artworks, function (artworks) {
+			if (artworks) ZU.processDocuments(Object.keys(artworks), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+	return false;
+}

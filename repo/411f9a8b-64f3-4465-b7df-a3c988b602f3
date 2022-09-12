@@ -1,0 +1,120 @@
+function detectWeb(doc, url) { return FW.detectWeb(doc, url); }
+function doWeb(doc, url) { return FW.doWeb(doc, url); }
+
+/**Article */
+
+FW.Scraper({
+itemType : 'journalArticle',
+detect : FW.Xpath('//meta[@name="citation_journal_title"]'),
+title : FW.Xpath('//meta[@name="citation_title"]/@content').text().trim(),
+attachments : [{ url: FW.Xpath('//p/a[contains(@href, "scripts/redi") and contains(@href, ".pdf")]').text().trim(),
+  title: "RePEc PDF",
+  type: "application/pdf" },
+  {url: FW.Url(),
+  title: "RePEc Snapshot",
+  type: "text/html"},
+  ],
+creators : FW.Xpath('//meta[@name="citation_authors"]/@content').text().replace(/(;[^A-Za-z0-9]*)$/, "").split(/;/).cleanAuthor("author", true),
+date : FW.Xpath('//meta[@name="citation_date"]/@content|//meta[@name="citation_year"]/@content').text(),
+issue : FW.Xpath('//meta[@name="citation_issue"]/@content').text(),
+volume : FW.Xpath('//meta[@name="citation_volume"]/@content').text(),
+pages : FW.Xpath('concat(//meta[@name="citation_firstpage"]/@content, "-", //meta[@name="citation_lastpage"]/@content)').remove(/^-|-$/),
+ISSN : FW.Xpath('//meta[@name="citation_issn"]/@content').text(),
+abstractNote: FW.Xpath('//meta[@name="citation_abstract"]/@content').text(),
+journalAbbreviation : FW.Xpath('//meta[@name="citation_journal_abbrev"]/@content').text(),
+DOI : FW.Xpath('//meta[@name="citation_doi"]/@content').text(),
+language : FW.Xpath('//meta[@name="DC.Language"]/@content').text(),
+tags :  FW.Xpath('//meta[@name="citation_keywords"]/@content').text().split(/;/),
+publisher: FW.Xpath('//meta[@name="citation_publisher"]/@content').text(),
+publicationTitle : FW.Xpath('//meta[@name="citation_journal_title"]/@content').text(),
+place : FW.Xpath('//meta[@name="citation_publication_place"]/@content').text(),
+hooks : { "scraperDone": function  (item,doc, url) {
+	for (i in item.creators) {
+		if (item.creators[i]  && !item.creators[i].firstName) {
+	   	item.creators[i]= ZU.cleanAuthor(item.creators[i].lastName, "author")
+		}
+	}}
+}
+});
+
+
+/** Working Papers*/
+FW.Scraper({
+itemType : 'report',
+detect : FW.Xpath('//meta[@name="dc.Type" and contains(@content, "techreport")]|//meta[contains(@name, "technical_report")]'),
+title : FW.Xpath('//meta[@name="citation_title"]/@content').text().trim(),
+attachments : [{ url: FW.Xpath('//p/a[contains(@href, "scripts/redi") and contains(@href, ".pdf")]').text().trim(),
+  title: "RePEc PDF",
+  type: "application/pdf" },
+  {url: FW.Url(),
+  title: "RePEc Snapshot",
+  type: "text/html"},
+  ],
+//make sure there are no empty authors:
+creators : FW.Xpath('//meta[@name="citation_authors"]/@content').text().replace(/(;[^A-Za-z0-9]*)$/, "").split(/;/).cleanAuthor("author", true),
+date : FW.Xpath('//meta[@name="citation_date"]/@content|//meta[@name="citation_year"]/@content').text(),
+pages : FW.Xpath('concat(//meta[@name="citation_firstpage"]/@content, "-", //meta[@name="citation_lastpage"]/@content)').remove(/^-|-$/),
+ISBN : FW.Xpath('//meta[@name="citation_isbn"]/@content').text(),
+abstractNote: FW.Xpath('//meta[@name="citation_abstract"]/@content').text(),
+DOI : FW.Xpath('//meta[@name="citation_doi"]/@content').text(),
+language : FW.Xpath('//meta[@name="DC.Language"]/@content').text(),
+tags :  FW.Xpath('//meta[@name="citation_keywords"]/@content').text().split(/;/),
+publisher: FW.Xpath('//meta[@name="citation_publisher"]/@content|//meta[@name="citation_technical_report_institution"]/@content').text(),
+reportNumber: FW.Xpath('//meta[@name="citation_technical_report_number"]/@content').text(),
+reportType : FW.Xpath('//meta[@name="series"]/@content').text().replace(/apers$/, "aper"),
+place : FW.Xpath('//meta[@name="citation_publication_place"]/@content').text(),
+numPages : FW.Xpath('//meta[@name="citation_number_of_pages"]/@content').text().remove(/\s\D*/),
+hooks : { "scraperDone": function  (item,doc, url) {
+	for (i in item.creators) {
+		if (item.creators[i]  && !item.creators[i].firstName) {
+	   	item.creators[i]= ZU.cleanAuthor(item.creators[i].lastName, "author")
+		}
+	}}
+}
+});
+
+FW.Scraper({
+itemType : 'computerProgram',
+detect : FW.Xpath('//meta[@name="dc.Type" and contains(@content, "software")]'),
+title : FW.Xpath('//meta[@name="citation_title"]/@content').text().trim(),
+attachments : [{ url: FW.Xpath('//p/a[contains(@href, "scripts/redi") and contains(@href, ".pdf")]').text().trim(),
+  title: "RePEc PDF",
+  type: "application/pdf" },
+  {url: FW.Url(),
+  title: "RePEc Snapshot",
+  type: "text/html"},
+  ],
+//make sure there are no empty authors:
+creators : FW.Xpath('//meta[@name="citation_authors"]/@content').text().replace(/(;[^A-Za-z0-9]*)$/, "").split(/;/).cleanAuthor("author", "true"),
+date : FW.Xpath('//meta[@name="citation_date"]/@content|//meta[@name="citation_year"]/@content').text(),
+pages : FW.Xpath('concat(//meta[@name="citation_firstpage"]/@content, "-", //meta[@name="citation_lastpage"]/@content)').remove(/^-|-$/),
+ISBN : FW.Xpath('//meta[@name="citation_isbn"]/@content').text(),
+abstractNote: FW.Xpath('//meta[@name="citation_abstract"]/@content').text(),
+DOI : FW.Xpath('//meta[@name="citation_doi"]/@content').text(),
+programmingLanguage: FW.Xpath('//meta[@name="plang"]/@content').text().trim(),
+seriesTitle: FW.Xpath('//meta[@name="series"]/@content').text().trim(),
+language : FW.Xpath('//meta[@name="DC.Language"]/@content').text(),
+tags :  FW.Xpath('//meta[@name="citation_keywords"]/@content').text().split(/;/),
+publisher: FW.Xpath('//meta[@name="citation_publisher"]/@content|//meta[@name="citation_technical_report_institution"]/@content').text(),
+place : FW.Xpath('//meta[@name="citation_publication_place"]/@content').text(),
+version : FW.Xpath('//meta[@name="citation_software_version"]/@content').text(),
+hooks : { "scraperDone": function  (item,doc, url) {
+	for (i in item.creators) {
+		if (item.creators[i]  && !item.creators[i].firstName) {
+	   	item.creators[i]= ZU.cleanAuthor(item.creators[i].lastName, "author")
+		}
+	}}
+}
+});
+
+
+
+//Multi Econpapers - this happens in frames - scaffold fails, regular testing works
+FW.MultiScraper({
+itemType : 'multiple',
+detect : FW.Url().match(/scripts\/a\/abstract\.pf/),
+choices : {
+  titles : FW.Xpath('//div[@class="abstractframe"]//li/a').text().trim(),
+  urls : FW.Xpath('//div[@class="abstractframe"]//li/a').key("href")
+}
+});

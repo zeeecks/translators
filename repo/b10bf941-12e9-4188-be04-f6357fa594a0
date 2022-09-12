@@ -1,0 +1,146 @@
+// URLs
+// trial: div=t18000115-12
+// session: name=16900430
+// OA: can use either name= or div=  !
+// div/name excludes dir= pages in browse.jsp
+
+function detectWeb(doc, url) {
+	if (url.includes('browse.jsp')  && ( url.includes('div=OA') || url.includes('name=') ) ) {
+		return "book";
+	} else if (url.includes('browse.jsp')  && ( url.includes('div=') ) ) {
+		return "case";
+	} else if ( url.includes("search.jsp") &&  getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+// to do:  not trials...
+// div=f16740429-1 - front matter
+// div=a16860520-1 - advertisements
+// div=s16740717-1 - punishment summary
+// div=o16751208-1 - supplementary material
+
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//li/p[@class="srchtitle"]/a');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+ 
+
+function scrape(doc, url) {
+
+if (url.includes('browse.jsp')  && ( url.includes('div=OA') || url.includes('name=') ) ) {
+		var newItem = new Zotero.Item("book");
+	} else {
+		var newItem = new Zotero.Item("case");
+	}
+
+	
+	var trialTitle = ZU.xpathText(doc, '//div[@class="sessionsPaper"]/div[@class="sessions-paper-main-title"]');   // updated @class name
+	
+	
+	
+	newItem.url = url;
+	
+	var sessDate = ZU.xpathText(doc, '//div[@class="sessionsPaper"]/div[@class="sessions-paper-date"]'); // add session date, as the date is now in a gettable node
+	
+	newItem.date = ZU.strToISO(sessDate);
+	
+	if (newItem.itemType == "case" && trialTitle) {
+ 		if (trialTitle == trialTitle.toUpperCase()) {
+  			newItem.title = ZU.capitalizeTitle(trialTitle, true);
+   		} else {
+      			newItem.title = trialTitle;
+   		}
+	} else if (newItem.itemType == "book") {
+		newItem.title = trialTitle + " " + sessDate;
+	}
+
+	newItem.title = newItem.title.trim().replace(/[,.]+$/, "");
+	if (!newItem.title) {
+		newItem.title = "[no title]";
+	}
+	
+	var referenceNo = ZU.xpathText(doc, '//div[@class="ob-panel"][1]/table[@class="ob-info-table"][1]/tbody/tr[th[contains(text(),"Reference")]]/td').trim(); // changed fetching Reference number
+	
+	newItem.extra = "Reference Number: " + referenceNo; // putting the ref number in the Extra field had a particular function, was it for Voyant? or the defunct DMCI plugin? retain it at least for now (non trials will want it anyway)
+	
+	if (newItem.itemType == "case") {
+		newItem.docketNumber = referenceNo;
+	}
+	
+	if (newItem.itemType == "book") {
+		newItem.place = "London";
+	}
+
+
+// tags for trials
+
+if (newItem.itemType == "case") {
+
+// offence info is under sessions-paper-sub-title; verdicts/sentences under ob-info-table
+
+	var off = ZU.xpath(doc, '//div[@class="sessionsPaper"]/div[@class="sessions-paper-sub-title"]/a');
+	for (let o of off){
+		newItem.tags.push(o.textContent)
+	}
+
+	var verdict = ZU.xpathText(doc, '//div[@class="ob-panel"]/table[@class="ob-info-table"][1]/tbody/tr[th[contains(text(),"Verdict")]]/td');
+
+	if(verdict) {
+		verdict = verdict.split(';');
+		for (let v of verdict ) {
+			newItem.tags.push(v)
+		}
+	}
+
+	var sentence = ZU.xpathText(doc, '//div[@class="ob-panel"]/table[@class="ob-info-table"][1]/tbody/tr[th[contains(text(),"Sentence")]]/td');
+
+	if(sentence) {
+		sentence = sentence.split(';');
+		for (let s of sentence ) {
+			newItem.tags.push(s)
+		}
+	}
+}
+
+// use print-friendly URLs for snapshots
+
+	var attachmentUrl = "https://www.oldbaileyonline.org/print.jsp?div=" + referenceNo;
+	newItem.attachments.push({ url  : attachmentUrl,    title : "OBO Snapshot",    mimeType : "text/html" });
+
+	newItem.complete();
+}
+
+
+
+// todo: replace save result set url
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else if (url.includes('browse.jsp') && ( url.includes('div=') || url.includes('name=') ) )  {
+		scrape(doc, url);
+	}
+}

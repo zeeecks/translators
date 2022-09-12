@@ -1,0 +1,58 @@
+function detectWeb(doc, url) {
+	if (url.includes('/search?') && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.biblio-record');
+	for (let row of rows) {
+		let href = attr(row, '.external-identifiers a[href*="fatcat.wiki/"]', 'href');
+		if (!href) href = attr(row, '.dropdown-menu a[title*="fulltext"]', 'href');
+		let title = ZU.trimInternal(text(row, '.biblio-title'));
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+}
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	
+	if (url.includes('fatcat.wiki/')) {
+		// Fatcat
+		translator.setTranslator('afef9c9d-53a1-49da-9155-1fdf683798c3');
+	}
+	else if (url.includes('archive.org/')) {
+		// Internet Archive
+		translator.setTranslator('db0f4858-10fa-4f76-976c-2592c95f029c');
+	}
+	else {
+		Z.debug('Unknown item fulltext source; trying Embedded Metadata');
+		// Embedded Metadata
+		translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	}
+	
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.doWeb(doc, url);
+	});
+}

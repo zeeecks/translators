@@ -1,0 +1,129 @@
+function detectWeb(doc, url) {
+	if (url.includes('/document.php?')) {
+		if (url.includes('/cqresearcher/')) {
+			// yes, these are "reports," but they have volume/issue numbers and
+			// are published like journal articles
+			return "journalArticle";
+		}
+		else if (url.includes('/congress/')
+			|| url.includes('/cqalmanac/')
+			|| url.includes('/pia/')
+			|| url.includes('/scyb/')) {
+			return "bookSection";
+		}
+		else if (url.includes('/cqmagazine/')) {
+			return "magazineArticle";
+		}
+	}
+	else if (getSearchResults(doc, url, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, url, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a[href*="document.php?"]');
+	if (!rows.length) {
+		rows = doc.querySelectorAll('a[onclick*="popupDoc("]');
+	}
+	
+	for (let row of rows) {
+		let href = row.getAttribute('href'); // prevent automatic relative -> absolute
+		let title = ZU.trimInternal(row.textContent);
+		if (/^\d+$/.test(title)) {
+			// sometimes the link is only on one part of the title:
+			// Brown, Scott P., [[466]]
+			title = ZU.trimInternal(row.parentNode.textContent);
+		}
+		
+		if (href == '#') href = '';
+		if (!href && row.hasAttribute('onclick')) {
+			// pull out the query parameters and append them to
+			// `/<current publication>/document.php?`
+			href = url.replace(/\/[^/]*$/, '/document.php?')
+				+ (row.getAttribute('onclick').match(/'(.+)'/) || [])[1];
+		}
+
+		if (!href || !title || title.includes('Read the Full Report')) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, url, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let id = url.match(/[?&]id=([^&#]+)/)[1];
+	var risURL = url.replace(/document\.php.*$/, `/citenow.php?id=${id}&action=endnote`);
+	
+	ZU.doGet(risURL, function (risText) {
+		risText = risText
+			.replace(/^JO/m, 'T2')
+			.replace(/^UR/gm, 'L1') // demote all existing URLs
+			.replace(/^L2/m, 'UR'); // ...and replace them with L2, the correct one
+		
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7"); // RIS
+		translator.setString(risText);
+		translator.setHandler("itemDone", function (obj, item) {
+			if (url.includes('/cqmagazine/')) {
+				item.itemType = 'magazineArticle';
+			}
+			
+			// innerText to capture line breaks
+			let date = innerText(doc, '#main .date, .time-info, .topheader');
+			if (!item.date) item.date = ZU.strToISO(date);
+			
+			let volume = date.match(/Volume (\w+)/);
+			if (volume) {
+				item.volume = volume[1];
+			}
+			
+			let issue = date.match(/Issue (\w+)/);
+			if (issue) {
+				item.issue = issue[1];
+			}
+			
+			item.abstractNote = text(doc, '#abstract');
+
+			item.attachments = [];
+			
+			let pdfURL = attr(doc, 'iframe[src*=".pdf"]', 'src');
+			if (!pdfURL && url.includes('/cqresearcher/')) {
+				pdfURL = `/cqresearcher/getpdf.php?id=${id}`;
+			}
+			
+			if (pdfURL) {
+				item.attachments.push({
+					title: 'Full Text PDF',
+					mimeType: 'application/pdf',
+					url: pdfURL
+				});
+			}
+			else {
+				item.attachments.push({
+					title: 'Snapshot',
+					document: doc
+				});
+			}
+			
+			item.notes = [];
+			
+			item.complete();
+		});
+		translator.translate();
+	});
+}

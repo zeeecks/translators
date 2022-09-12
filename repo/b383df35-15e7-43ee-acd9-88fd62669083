@@ -1,0 +1,60 @@
+function detectWeb(doc, url) {
+	// We'll go with Book throughout for simplicity's sake
+	if (/\/Record\/\d+/.test(url)) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.result div[class*="resultItemLine"]>a.title[href*="/Record/"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) scrape(Object.keys(items));
+		});
+	}
+	else {
+		scrape([url]);
+	}
+}
+
+
+function constructMARCurls(urls) {
+	let MARCurls = [];
+	for (let url of urls) {
+		url = url.replace(/\/(Details|Holdings)([#?].*)?/, ""); // remove panels
+		MARCurls.push(url + "/Export?style=MARCXML");
+	}
+	return MARCurls;
+}
+
+
+function scrape(urls) {
+	let MARCurls = constructMARCurls(urls);
+	// Z.debug(MARCurls);
+	ZU.doGet(MARCurls, function(text) {
+		var translator = Zotero.loadTranslator("import");
+		// Z.debug(text);
+		// MARC XML
+		translator.setTranslator("edd87d07-9194-42f8-b2ad-997c4c7deefd");
+		translator.setString(text);
+		translator.translate();
+	});
+}

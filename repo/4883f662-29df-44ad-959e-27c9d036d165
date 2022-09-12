@@ -1,0 +1,319 @@
+function detectWeb(doc, url) {
+	// Just differentiate single and multiple.
+	// Identify item type (book or conferencePaper) based on "fdr_label" class.
+	if (url.includes('card')) {
+		let isConferencePaper = false;
+		let confMetaName = ['اسم الاجتماع', '会议名称', 'Meeting Name', 'Nom de la réunion', 'Название мероприятия', 'Nombre de la reunión'];
+		let labelArray = doc.querySelectorAll('.fdr_label');
+		for (let i = 0; i < labelArray.length; i++) {
+			for (let j = 0; j < confMetaName.length; j++) {
+				isConferencePaper = labelArray[i].innerText.includes(confMetaName[j]);
+				if (isConferencePaper) {
+					break;
+				}
+			}
+			if (isConferencePaper) {
+				break;
+			}
+		}
+		if (isConferencePaper) {
+			return 'conferencePaper';
+		}
+		else {
+			return 'book';
+		}
+	}
+
+	/* Multiples currently don't load properly
+	else if (getSearchResults(doc, true)) {
+		return 'multiple';
+	}
+	*/
+	return false;
+}
+
+function cleanMeta(str) {
+	// clean meta fields obtained from page
+	if (str.includes(';') === false) {
+		return str.slice(str.indexOf(':') + 2);
+	}
+	else {
+		var strArray = str.slice(str.indexOf(':') + 2).split(';');
+		return strArray;
+	}
+}
+
+function scrape(doc, url) {
+	var newItem = new Z.Item();
+
+	if (url.includes('card')) {
+		// attach document card URL and snapshot
+		// TEMP: Disable at least until we have post-JS snapshots
+		/* newItem.attachments.push({
+			url: url,
+			title: 'FAO Document Record Snapshot',
+			mimeType: 'text/html',
+			snapshot: true
+		}); */
+
+		//* ********* Begin fixed-location variables **********
+
+		// Some variables always appear and appear at the same location in all document pages.
+
+		// abstract
+		var abs = doc.getElementById("mainContentN0");
+		// The childrens of `abs` are the label "Abstract:" in a strong-tag,
+		// the abstract in several p-tags or text nodes directly, and possibly
+		// a note about other languages which begins also with a strong-tag.
+		if (abs) {
+			var children = abs.childNodes;
+			var abstractFound = false;
+			for (let child of children) {
+				if (child.tagName == "STRONG" || (child.nodeType == 1 && ZU.xpathText(child, './/strong'))) {
+					if (abstractFound) {
+						break; // stop when another strong tag is found
+					}
+					else {
+						abstractFound = true;
+						continue; // exclude the label "Abstract"
+					}
+				}
+				if (newItem.abstractNote) {
+					if (newItem.abstractNote.slice(-1) !== "\n") {
+						newItem.abstractNote += "\n\n";
+					}
+					newItem.abstractNote += child.textContent;
+				}
+				else {
+					newItem.abstractNote = child.textContent;
+				}
+			}
+			// DOI: Some docs contain DOI as a separate paragraph in abs field
+			var DOILead = 'https://doi.org/';
+			if (abs.innerText.includes(DOILead)) {
+				var DOIMatch = abs.innerText.match(/https:\/\/doi\.org\/(.+)/i);
+				newItem.DOI = DOIMatch[1];
+			}
+		}
+		// attach PDF
+		var pdfUrl = ZU.xpath(doc, '//*[@id="mainRightN0"]/div[2]/a')[0].href;
+		newItem.attachments.push({
+			url: pdfUrl,
+			title: 'Full Text PDF',
+			mimeType: 'application/pdf'
+		});
+		// url
+		newItem.url = url;
+		// language: 2 or 3 letters following ISO 639
+		// indicated by the last 1-3 letters in PDF file name (langCode)
+		// One good example is the various language versions of http://www.fao.org/publications/card/en/c/I2801E
+		var langCode = '';
+		var matches = pdfUrl.match(/([a-z]+)\.pdf$/i);
+		if (matches) {
+			langCode = matches[1];
+		}
+		// In the new PDF naming scheme, langCode follows ISO 639.
+		if (langCode.length > 1) {
+			newItem.language = langCode.toLowerCase();
+		}
+		// In the old PDF naming scheme, langCode is one lower/upper case letter and only differentiates between the 6 UN languages.
+		else if ((langCode == 'a') || (langCode == 'A')) {
+			newItem.language = 'ar';
+		}
+		else if ((langCode == 'c') || (langCode == 'C')) {
+			newItem.language = 'zh';
+		}
+		else if ((langCode == 'e') || (langCode == 'E')) {
+			newItem.language = 'en';
+		}
+		else if ((langCode == 'f') || (langCode == 'F')) {
+			newItem.language = 'fr';
+		}
+		else if ((langCode == 'r') || (langCode == 'R')) {
+			newItem.language = 'ru';
+		}
+		else if ((langCode == 's') || (langCode == 'S')) {
+			newItem.language = 'es';
+		}
+		else { // Other languages are usually designated 'o'. Using 'else' just to be safe.
+			newItem.language = 'other';
+		}
+		// title: use colon to connect main title and subtitle (if subtitle exists)
+		var mainTitle = ZU.xpathText(doc, '//*[@id="headerN0"]/h1');
+		var subTitle = ZU.xpathText(doc, '//h4[@class="csc-firstHeader h1"]');
+		if (!subTitle) {
+			newItem.title = mainTitle;
+		}
+		else if ((newItem.language == 'zh') || (newItem.language == 'ja')) {
+			newItem.title = mainTitle + '：' + subTitle;
+		}
+		else {
+			newItem.title = mainTitle + ': ' + subTitle;
+		}
+
+		//* ********* End fixed-location variables **********
+
+
+		//* ********* Begin dynamic-location variables **********
+
+		// Variables that appear neither in all document pages nor at same positions in the pages.
+		var metaText = ZU.xpath(doc, '//*[@id="mainN0"]')[0].innerText.split('\n'); // scrape text of meta area and split into an array based on line breaks.
+		// get what variables are listed in the page, save to object existingMeta
+		var textVariable = { // declarations for metadata names as appeared in document pages in different languages
+			date: ['سنة النشر', '出版年份', 'Year of publication', 'Année de publication', 'Год издания', 'Fecha de publicación'],
+			publisher: ['الناشر', '出版方', 'Publisher', 'Éditeur', 'Издатель', 'Editor'],
+			place: ['مكان النشر', '出版地点', 'Place of publication', 'Lieu de publication', 'Место публикации', 'Lugar de publicacion'],
+			pages: ['الصفحات', '页数', 'Pages', 'Страницы', 'Páginas'],
+			ISBN: ['الرقم الدولي الموحد للكتاب', 'ISBN'],
+			author: ['الكاتب', '作者', 'Author', 'Auteur', 'Автор', 'Autor'],
+			seriesTitle: ['العنوان التسلسي', '系列标题', 'Serial Title', 'Titre de la série', 'Название серии', 'Título de la serie'],
+			seriesNumber: ['رقم المسلسل', '系列号码', 'Series number', 'Numéro de série', 'Серийный номер', 'Número de serie'],
+			conference: ['اسم الاجتماع', '会议名称', 'Meeting Name', 'Nom de la réunion', 'Название мероприятия', 'Nombre de la reunión'],
+			tags: ['المعجم الكلمات الموضوع', 'AGROVOC', 'Agrovoc', 'АГРОВОК']
+		};
+		var existingMeta = {};
+		for (let i = 0; i < metaText.length; i++) {
+			for (let key in textVariable) {
+				for (let j = 0; j < textVariable[key].length; j++) {
+					if (metaText[i].includes(textVariable[key][j])) {
+						existingMeta[key] = metaText[i];
+					}
+				}
+			}
+		}
+
+		for (let key in existingMeta) {
+			var metaResult = cleanMeta(existingMeta[key]);
+
+			// date
+			if (key.includes('date')) {
+				newItem.date = metaResult;
+			}
+			// publisher
+			if (key.includes('publisher')) {
+				newItem.publisher = metaResult;
+			}
+			// place
+			if (key.includes('place')) {
+				newItem.place = metaResult;
+			}
+			// number of pages
+			if (key.includes('pages')) {
+				newItem.numPages = metaResult.match(/\d+/)[0];
+			}
+			// ISBN
+			if (key.includes('ISBN')) {
+				newItem.ISBN = ZU.cleanISBN(metaResult, false);
+			}
+			// author(s): whether there is one or more authors; whether last and first name are separated by ',' (if not, use single-field mode).
+			if (key.includes('author')) {
+				if (Array.isArray(metaResult)) { // If there are more than 1 authors, metaResult returns an array.
+					for (let i = 0; i < metaResult.length; i++) {
+						if (metaResult[i].includes(',')) {
+							newItem.creators.push(ZU.cleanAuthor(metaResult[i], 'author', true));
+						}
+						else {
+							newItem.creators.push({
+								lastName: metaResult[i],
+								creatorType: 'author',
+								fieldMode: 1
+							});
+						}
+					}
+				}
+				else if (metaResult.includes(',')) {
+					newItem.creators.push(ZU.cleanAuthor(metaResult, 'author', true));
+				}
+				else {
+					newItem.creators.push({
+						lastName: metaResult,
+						creatorType: 'author',
+						fieldMode: 1
+					});
+				}
+			}
+			// tag (Agrovoc)
+			if (key.includes('tags')) {
+				for (var i = 0; i < metaResult.length; i++) {
+					newItem.tags[i] = metaResult[i].trim();
+				}
+			}
+			// seriesTitle
+			if (key.includes('seriesTitle')) {
+				newItem.series = metaResult;
+			}
+			// seriesNumber: extract the number.
+			if (key.includes('seriesNumber')) {
+				newItem.seriesNumber = (metaResult.match(/\d+/) || [])[0];
+			}
+			// conferenceName: save for later conditions.
+			if (key.includes('conference')) {
+				var conferenceWeb = metaResult[0];
+				newItem.conferenceName = conferenceWeb;
+			}
+		}
+
+		// If there's no publisher, use 'FAO' as publisher.
+		if (!newItem.publisher) {
+			newItem.publisher = 'FAO';
+		}
+		// If there's no place, use 'Rome, Italy' as place.
+		if (!newItem.place) {
+			newItem.place = 'Rome, Italy';
+		}
+		// If there's no author, use 'FAO' as author.
+		if (!newItem.creators.length) {
+			newItem.creators.push({
+				lastName: 'FAO',
+				creatorType: 'author',
+				fieldMode: 1
+			});
+		}
+		// If conference exists in document page, the itemType is 'conferencePaper'; otherwise it's 'book'.
+		if (conferenceWeb) {
+			newItem.itemType = 'conferencePaper';
+		}
+		else {
+			newItem.itemType = 'book';
+		}
+		//* ********* End dynamic-location variables **********
+	}
+	newItem.complete();
+}
+
+
+// get items from a multiple-item page
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//*[@class="item-image"]');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].text);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Z.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+// Note on test cases: Because the pages use dynamic elements (which is also why the translator doesn't work for multiple item pages), automatic test in Scaffold doesn't work. Every time a test is needed, use "New Web" to manually add it.

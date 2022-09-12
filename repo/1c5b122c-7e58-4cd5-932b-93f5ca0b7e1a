@@ -1,0 +1,60 @@
+function detectWeb(doc, _url) {
+	let jsonText = text(doc, 'script[type="application/ld+json"]');
+	if (jsonText && JSON.parse(jsonText)['@type'] == 'NewsArticle') {
+		return "newspaperArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a.article-card__link');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, _url) {
+	let item = new Zotero.Item('newspaperArticle');
+	let json = JSON.parse(text(doc, 'script[type="application/ld+json"]'));
+	item.title = json.headline;
+	item.url = json.url;
+	item.date = ZU.strToISO(json.dateModified || json.datePublished);
+	item.abstractNote = json.description;
+	item.publicationTitle = json.publisher.name;
+	item.language = 'en';
+	item.creators.push(ZU.cleanAuthor(json.author.name, 'author'));
+	
+	if (doc.querySelector('.wire-published-by__authors')) {
+		item.creators = [];
+		for (let author of text(doc, '.wire-published-by__authors').split(/, | and /)) {
+			item.creators.push(ZU.cleanAuthor(author, 'author'));
+		}
+	}
+	
+	item.attachments.push({ title: 'Snapshot', document: doc });
+	item.libraryCatalog = '';
+	
+	item.complete();
+}

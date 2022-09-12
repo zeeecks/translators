@@ -1,0 +1,77 @@
+/**
+	Copyright (c) 2019 Eran Rosenthal
+	
+	This program is free software: you can redistribute it and/or
+	modify it under the terms of the GNU Affero General Public License
+	as published by the Free Software Foundation, either version 3 of
+	the License, or (at your option) any later version.
+	
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+	Affero General Public License for more details.
+	
+	You should have received a copy of the GNU Affero General Public
+	License along with this program. If not, see
+	<http://www.gnu.org/licenses/>.
+*/
+
+
+// attr()/text() v2
+// eslint-disable-next-line
+function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null;}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null;}
+
+
+function detectWeb(doc, _url) {
+	if (attr(doc, 'meta[property="og:type"]', 'content') == "article") {
+		return 'newspaperArticle';
+	}
+	return false;
+}
+function doWeb(doc, url) {
+	var i;
+	var item = new Zotero.Item('newspaperArticle');
+	
+	item.title = ZU.xpathText(doc, '//meta[@property="og:title"]/@content');
+	item.publicationTitle = 'Globes';
+	item.url = url;
+	item.abstractNote = ZU.xpathText(doc, '//meta[@name="description"]/@content');
+	item.section = ZU.xpathText(doc, '//meta[@property="article:section"]/@content');
+	var tags = ZU.xpath(doc, '//meta[@property="article:tag"]');
+	for (i = 0; i < tags.length; i++) {
+		item.tags.push(tags[i].content);
+	}
+
+	var json = ZU.xpathText(doc, '//script[@type="application/ld+json"]');
+	var data = JSON.parse(json);
+
+	if (data) {
+		if (data.author && Array.isArray(data.author)) {
+			for (i = 0; i < data.author.length; i++) {
+				// note the author sometimes include date in form of Month Year
+				// and possibly Day Month Year
+				var author = data.author[i].name;
+				var isDate = /19[0-9]{2}$/.test(author)
+					|| /2[0-9]{3}$/.test(author);
+				if (!isDate) {
+					author = Zotero.Utilities.cleanAuthor(author, 'author');
+					item.creators.push(author);
+				}
+			}
+		}
+		if (data.inLanguage) {
+			item.language = data.inLanguage;
+		}
+
+		if (data.datePublished) {
+			item.date = ZU.strToISO(data.datePublished);
+		}
+	}
+
+	item.attachments.push({
+		title: "Globes Snapshot",
+		document: doc,
+		mimeType: "text/html"
+	});
+	item.complete();
+}

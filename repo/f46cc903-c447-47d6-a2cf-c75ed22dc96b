@@ -1,0 +1,128 @@
+/*
+   CAIRN.info Translator
+   Copyright (C) 2013-2022 Sebastian Karcher
+
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU Affero General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU Affero General Public License for more details.
+
+   You should have received a copy of the GNU Affero General Public License
+   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+function detectWeb(doc, _url) {
+	let breadcrumbPage = text(doc, '#tab-article, #tab-resume');
+	// Z.debug(breadcrumbPage)
+	if (breadcrumbPage == "Ouvrage collectif") {
+		return "book";
+	}
+	else if (breadcrumbPage == "Article") {
+		return "journalArticle";
+	}
+	else if (breadcrumbPage == "Chapitre") {
+		return "bookSection";
+	}
+	else if (breadcrumbPage == "Résumé") {
+		let typeDocument = ZU.xpathText(doc, '//ol[@class="breadcrumb"]/li[2]/a');
+		// Z.debug(typeDocument)
+		if (typeDocument == "Revues") {
+			return "journalArticle";
+		}
+		else if (typeDocument == "Ouvrages") {
+			return "bookSection";
+		}
+	}
+
+	if (doc.querySelectorAll('.article-list-item .titre-article')) {
+		return "multiple";
+	}
+	
+	return false;
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+
+	var rows = doc.querySelectorAll('.article-list-item .titre-article');
+	for (let row of rows) {
+		let href = attr(row, 'a', 'href');
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+async function doWeb(doc, url) {
+	if (await detectWeb(doc, url) == 'multiple') {
+		let items = await Zotero.selectItems(getSearchResults(doc, false));
+		if (items) {
+			await Promise.all(
+				Object.keys(items)
+					.map(url => requestDocument(url).then(scrape))
+			);
+		}
+	}
+	else {
+		await scrape(doc);
+	}
+}
+
+async function scrape(doc) {
+	let risURL = attr(doc, '#export-citation [data-webtrends-action="clickOnExportZotero"]', 'href');
+	// Z.debug(risURL)
+
+	let pdfLink = attr('[name="citation_pdf_url"]', 'content');
+	let keywords = attr('[name="article-mot_cle"]', 'content');
+	let issn = attr('[name="citation_issn"]', 'content');
+	let risText = await requestText(risURL);
+	// Z.debug(risText);
+	let translator = Zotero.loadTranslator('import');
+	translator.setTranslator('32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7'); // RIS
+	translator.setString(risText);
+	translator.setHandler('itemDone', (_obj, item) => {
+		if (item.ISSN) {
+			item.ISSN = ZU.cleanISSN(item.ISSN);
+		}
+		if (!item.ISSN && issn) {
+			item.ISSN = issn;
+		}
+		if (keywords) {
+			let keywordArray = keywords.split(/\s*;\s*/);
+			item.tags = keywordArray;
+		}
+		if (item.language) {
+			item.language = item.language.toLowerCase();
+		}
+
+		item.archive = "";
+		// There's some attachement information in the RIS that we discard
+		item.attachments = [];
+
+		if (pdfLink) {
+			item.attachments.push({
+				url: pdfLink.href,
+				title: 'Full Text PDF',
+				mimeType: 'application/pdf'
+			});
+		}
+		
+		item.attachments.push({
+			title: 'Snapshot',
+			document: doc
+		});
+
+		item.complete();
+	});
+	await translator.translate();
+}

@@ -1,0 +1,69 @@
+function detectWeb(doc, _url) {
+	if (doc.querySelector('#detailsForm')) {
+		return "report";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('tr[data-rk]');
+	for (let row of rows) {
+		let rk = row.getAttribute('data-rk');
+		let title = ZU.trimInternal(text(row, 'span'));
+		if (!rk || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[`/NTRL/dashboard/searchResults/titleDetail/${rk}.xhtml`] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item('report');
+	
+	item.title = text(doc, '#detailsForm\\:itemTitle');
+	item.reportNumber = text(doc, '#detailsForm\\:itemAbbr');
+	item.date = ZU.strToISO(text(doc, '#detailsForm\\:publicationDate'));
+	item.numPages = text(doc, '#detailsForm\\:pageCount'); // will migrate in new schema
+	item.abstractNote = text(doc, '#detailsForm\\:summary');
+	item.institution = text(doc, '#detailsForm\\:corporateAuthors');
+	item.url = url.replace(/[?#].*$/, '');
+	
+	for (let author of text(doc, '#detailsForm\\:personalAuthors').split('; ')) {
+		item.creators.push(ZU.cleanAuthor(author, 'author', true));
+	}
+	
+	for (let tag of doc.querySelectorAll('#detailsForm\\:keywords_list li')) {
+		item.tags.push({ tag: tag.textContent.trim() });
+	}
+	
+	let supplement = text(doc, '#detailsForm\\:supplementalNote');
+	if (supplement) {
+		item.notes.push({ note: supplement });
+	}
+	
+	// we should grab the PDF, but it's only accessible via a POST request...
+	
+	item.attachments.push({
+		title: 'Snapshot',
+		document: doc
+	});
+	
+	item.complete();
+}

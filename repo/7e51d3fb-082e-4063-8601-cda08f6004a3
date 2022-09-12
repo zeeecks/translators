@@ -1,0 +1,60 @@
+// eslint-disable-next-line no-unused-vars
+function detectWeb(doc, url) {
+	if (doc.getElementsByClassName('m-article-title').length) {
+		return "newspaperArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a.m-promo__title');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	// translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		// some garbage makes it into item tags
+		for (let i = item.tags.length - 1; i > -1; i--) {
+			if (item.tags[i].search(/premium\d|^lytics/) != -1) {
+				item.tags.splice(i, 1);
+			}
+		}
+		item.title = item.title.replace(/\(.+?\)$/, "");
+		item.ISSN = "0277-4232";
+		item.publicationTitle = "Education Week";
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = "newspaperArticle";
+		trans.doWeb(doc, url);
+	});
+}

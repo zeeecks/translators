@@ -1,0 +1,59 @@
+function detectWeb(doc, url) {
+	
+	if (url.match(/show_detail&id=/)) return "book";
+	else if (ZU.xpathText(doc, '//div[contains(@class, "item alterList")]/a')) return "multiple"
+	
+}
+	
+
+function doWeb(doc, url){
+
+	var articles = new Array();
+	if (detectWeb(doc, url) == "multiple") { 
+		var items = {};
+		var titles = doc.evaluate('//div[contains(@class, "item alterList")]/a', doc, null, XPathResult.ANY_TYPE, null);
+		var title;
+		while (title = titles.iterateNext()) {
+			items[title.href] = title.textContent;
+		}
+		Zotero.selectItems(items, function (items) {
+			if (!items) {
+				return true;
+			}
+			for (var i in items) {
+				articles.push(i.replace(/(&id=[^&^\?]+)/, "&inXML=true$1"));
+			}
+			scrape(articles);	
+		});
+	} else {
+		var modsurl = url.replace(/(&id=[^&^\?]+)/, "&inXML=true$1");
+		scrape([modsurl]);
+	}
+}
+
+// help function
+function scrape(articles){
+	for (i in articles){
+	var modsurl = articles[i];
+	//Z.debug(modsurl)
+	Zotero.Utilities.HTTP.doGet(modsurl, function (text) {	
+		//they seem to be handling marctype bibliography as the main genre for books we handle this hear to not lose info in MODS import
+		text = text.replace(/bibliography\<\/genre\>/, "book</genre>")
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("0e2235e7-babf-413c-9acf-f27cce5f059c");
+		translator.setString(text);
+		translator.setHandler("itemDone", function(obj, item) {
+			//creators are entered poorly
+			for (j in item.creators){
+				if (item.creators[j].lastName && item.creators[j].lastName.indexOf(",")!=-1){
+					item.creators[j] = ZU.cleanAuthor(item.creators[j].lastName, item.creators[j].creatorType, true)
+				}
+			}
+			//add catalog entry as permalink
+			item.attachments.push({url: modsurl.replace(/&inXML=true/, ""), title: "SLIMS Library Catalog Permalink", mimeType: "text/html", snapshot: false})
+			item.complete();
+		});	
+		translator.translate();
+	});
+	}
+}

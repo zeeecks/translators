@@ -1,0 +1,62 @@
+function detectWeb(doc, _url) {
+	if (doc.querySelector('.field-item .page-title')) {
+		return "artwork";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.teaser-title a[href*="/art/"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, _url) {
+	let item = new Zotero.Item('artwork');
+	
+	item.title = text(doc, '.field-item .page-title');
+	item.abstractNote = text(doc, '.field-name-body');
+	item.artworkMedium = text(doc, '.field-name-field-materials');
+	item.artworkSize = text(doc, '.field-name-field-dimensions');
+	item.date = ZU.strToISO(text(doc, '.field-name-field-year'));
+	
+	for (let artist of doc.querySelectorAll('.field-name-field-artist .artist')) {
+		item.creators.push(ZU.cleanAuthor(artist.textContent, 'artist'));
+	}
+	
+	item.attachments.push({
+		title: 'Snapshot',
+		document: doc
+	});
+	
+	item.attachments.push({
+		title: 'Thumbnail',
+		mimeType: 'image/jpeg',
+		url: attr(doc, '.field-name-scald-thumbnail img', 'src')
+	});
+	
+	item.complete();
+}

@@ -1,0 +1,78 @@
+function detectWeb(doc, url) {
+	if (url.indexOf('/library/')>-1) {
+		return "report";
+		//other types as events or press releases are ignored
+	} else if (url.indexOf('/site-search?')>-1 && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//div[contains(@class, "views-row")]/div[contains(@class, "field-name-title-field")]/a[contains(@href, "/library/")]');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var item = new Zotero.Item("report");
+	item.title = ZU.xpathText(doc, '//main//h1');
+	item.date = ZU.xpathText(doc, '//span[contains(@class, "date-display-single")]');
+	var authorString = ZU.xpathText(doc, '//div[contains(@class, "field-name-field-publication-author")]/text()');
+	//e.g. Hirschland, M., Jazayeri, A. & Lee, N.
+	if (authorString) {
+		var authors = authorString.split(/\.,|&/);
+		for (var i=0; i<authors.length; i++) {
+			item.creators.push(ZU.cleanAuthor(authors[i], "author", true));
+		}
+	}
+	
+	item.publisher = ZU.xpathText(doc, '(//div[contains(@class, "field-name-field-publication-publisher")])[1]');
+	item.pages = ZU.xpathText(doc, '//div[contains(@class, "field-name-field-publication-links-pages")]');
+	item.abstractNote = ZU.xpathText(doc, '//div[contains(@class, "field-name-body")]');
+	if (item.abstractNote) {
+		ZU.trimInternal(item.abstractNote);
+	}
+	item.reportType = ZU.xpathText(doc, '//div[contains(@class, "field-name-field-publication-type")]/a');
+	var tags = ZU.xpath(doc, '//div[contains(@class, "field field-name-field-publication-topics")]/a');
+	for (var i=0; i<tags.length; i++) {
+		item.tags.push(tags[i].textContent);
+	}
+	item.url = ZU.xpathText(doc, '//link[@rel="canonical"]/@href') || url;
+	var pdfurl = ZU.xpathText(doc, '//div[contains(@class, "field-name-field-publication-links")]/a/@href');
+	if (pdfurl) {
+		item.attachments.push({
+			url: pdfurl,
+			title: "Fulltext",
+			mimeType: "application/pdf"
+		});
+	}
+	item.complete();
+}

@@ -1,0 +1,75 @@
+function detectWeb(doc, url) {
+	if (doc.querySelector('.single-article')) {
+		return "magazineArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a.hit-link');
+	if (!rows.length) rows = doc.querySelectorAll('.issue-readings a.ac-title');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		item.title = text(doc, '.title');
+		let subtitle = text(doc, '.subheading');
+		if (subtitle) item.title += `: ${subtitle}`;
+		
+		item.creators = [];
+		let header = doc.querySelector('.title-header');
+		if (!header) header = doc.querySelector('.article-header');
+		for (let author of header.querySelectorAll('a[rel="author"]')) {
+			item.creators.push(ZU.cleanAuthor(author.innerText, 'author'));
+		}
+		
+		item.tags = [];
+		for (let tag of doc.querySelectorAll('.tags .tag')) {
+			item.tags.push({ tag: tag.textContent.trim() });
+		}
+		
+		item.volume = text(doc, '.related-issue-text .title')
+			.replace('issue', '');
+		item.abstractNote = ZU.cleanTags(item.abstractNote);
+		
+		item.ISSN = '0017-789X';
+		item.publicationTitle = 'Harper\'s Magazine';
+		
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = 'magazineArticle';
+		trans.doWeb(doc, url);
+	});
+}

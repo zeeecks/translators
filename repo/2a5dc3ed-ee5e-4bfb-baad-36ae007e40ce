@@ -1,0 +1,123 @@
+function detectWeb(doc, url) {
+	let title = attr(doc, 'meta[name="citation_title"]', 'content');
+	if (title) {
+		if (doc.querySelector('meta[name="citation_isbn"]')) {
+			let bookTitle = attr(doc, 'meta[name="citation_inbook_title"]', 'content');
+			if (!bookTitle || title == bookTitle) {
+				return "book";
+			}
+			else {
+				return "bookSection";
+			}
+		}
+		else {
+			return "journalArticle";
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.resultTitle > a[href*="/document/"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	// EM is, as a general rule, better than RIS on this site. It's missing a
+	// couple things, though - subtitles, DOIs for books (to the extent that
+	// those are useful) - so we'll fill those in manually.
+	
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		if (item.date) {
+			item.date = item.date.replace(/\//g, '-');
+		}
+		
+		if (item.section && (item.section == item.publicationTitle || item.section == item.bookTitle)) {
+			delete item.section;
+		}
+		
+		let DOI = ZU.cleanDOI(attr(doc, '.doi > a', 'href'));
+		if (DOI) {
+			item.DOI = DOI;
+		}
+		
+		item.attachments = [];
+		let pdfURL = attr(doc, 'a.downloadPdf', 'href');
+		if (pdfURL) {
+			item.attachments.push({
+				title: 'Full Text PDF',
+				mimeType: 'application/pdf',
+				url: pdfURL
+			});
+		}
+		
+		let subtitle = text(doc, 'h2.subtitle');
+		if (subtitle && !item.title.includes(': ')) {
+			item.title = `${item.title.trim()}: ${subtitle}`;
+		}
+		
+		if (item.itemType == 'book' && item.bookTitle) {
+			delete item.bookTitle;
+		}
+		
+		if (item.bookTitle && !item.bookTitle.includes(': ')) {
+			let risURL = attr(doc, 'a[title="Download in RIS format"]', 'href');
+			if (!risURL) {
+				risURL = url.replace(/\/html([?#].*)$/, '/machineReadableCitation/RIS');
+			}
+			
+			ZU.doGet(risURL, function (risText) {
+				let bookTitle = risText.match(/^\s*T1\s*-\s*(.*)$/m);
+				if (bookTitle) {
+					item.bookTitle = bookTitle[1];
+				}
+				item.complete();
+			});
+		}
+		else {
+			item.complete();
+		}
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		if (detectWeb(doc, url) == 'bookSection') {
+			trans.itemType = 'bookSection';
+		}
+		trans.addCustomFields({
+			// This should be the case by default! But I think the page including
+			// both article:section and citation_inbook_title is triggering an
+			// EM bug (looking into that is a separate todo).
+			citation_inbook_title: 'bookTitle'
+		});
+		trans.doWeb(doc, url);
+	});
+}

@@ -1,0 +1,102 @@
+let preprintType = ZU.fieldIsValidForType('title', 'preprint')
+	? 'preprint'
+	: 'report';
+
+function detectWeb(doc, url) {
+	var singleRe   = /^https?:\/\/eprint\.iacr\.org\/(\d{4}\/\d{3}|cgi-bin\/print\.pl)/;
+	var multipleRe = /^https?:\/\/eprint\.iacr\.org\/search\?/;
+	if (singleRe.test(url)) {
+		return preprintType;
+	} else if (multipleRe.test(url)) {
+		return "multiple";
+	}
+}
+
+function scrape(doc, url) {
+	var reportNoSelector = "h4";
+	var titleSelector    = "h3";
+	var authorsSelector  = ".authorName";
+	var abstractXPath    = "//h5[starts-with(text(),\"Abstract\")]/following-sibling::p/text()";
+	var keywordsSelector = ".keywords > .keyword";
+	var reportNo = text(doc, reportNoSelector);
+	reportNo = reportNo.match(/(\d{4})\/(\d{3,4})$/);
+	if (reportNo){
+		var year = reportNo[1];
+		var no   = reportNo[2];
+	}
+	var title = text(doc, titleSelector);
+	title = ZU.trimInternal(title);
+
+	var authors = doc.querySelectorAll(authorsSelector);
+	authors = [...authors].map(author => author.textContent);
+	if (!authors.length) {
+		authors = text(doc, '.fst-italic').split(/\band\b/)
+	}
+	
+	var abstr = "";
+	var abstractLines = doc.evaluate(abstractXPath, doc, null, XPathResult.ANY_TYPE, null);
+	var nextLine;
+	while (nextLine = abstractLines.iterateNext()) {
+		// An inner line starting with \n starts a new paragraph in the abstract.
+		if (nextLine.textContent[0] == "\n") {
+			abstr += "\n\n";
+		}
+		abstr +=  ZU.trimInternal(nextLine.textContent);
+	}
+	
+	var keywords = doc.querySelectorAll(keywordsSelector);
+	keywords = [...keywords].map(kw => kw.textContent.trim());
+
+	var newItem = new Zotero.Item(preprintType);
+	
+	newItem.date = year;
+	newItem.reportNumber = no;
+	//we want to use this later & make sure we don't make http--> https requests or vice versa. 
+	newItem.url = url.match(/^https?:\/\/[^\/]+/)[0] + "/" + year + "/" + no;
+	newItem.title = title;
+	newItem.abstractNote = abstr;
+	for (var i in authors) {
+		newItem.creators.push(Zotero.Utilities.cleanAuthor(authors[i], "author"));
+	}
+for (var i = 0; i < keywords.length; i++) {
+	//sometimes the keywords split returns an empty tag - those crash the translator if they're pushed.
+	if (keywords[i] != null){
+		newItem.tags.push(keywords[i]);}
+	}
+	newItem.attachments = [
+		{url:newItem.url+".pdf", title:"Full Text PDF", mimeType:"application/pdf"}
+	];
+	newItem.complete();
+
+}
+
+function doWeb(doc, url) {
+	var nextTitle;
+
+	if (detectWeb(doc, url) == "multiple") {
+		var rowSelector = ".paperList > div, .results > div";
+		var titleSelector = ".papertitle, strong";
+		var linkSelector = ".paperlink, a:first-child";
+
+		let items = {};
+		for (let row of doc.querySelectorAll(rowSelector)) {
+			let title = text(row, titleSelector);
+			let href = attr(row, linkSelector, 'href');
+			if (!title || !href) continue;
+			items[href] = title;
+		}
+
+		var titles = doc.querySelectorAll(titleSelector);
+		var links  = doc.querySelectorAll(linkSelector);
+		Zotero.selectItems(items, function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	} else {
+		if (url.search(/\.pdf$/)!= -1) {
+			//go to the landing page to scrape
+			url = url.replace(/\.pdf$/, "");
+			ZU.processDocuments([url], scrape)
+		}
+		else scrape(doc, url)
+	}
+}

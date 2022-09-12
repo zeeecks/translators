@@ -1,0 +1,83 @@
+function detectWeb(doc, _url) {
+	if (doc.querySelector('#record-details-column')
+		&& doc.querySelector('#formattedMarcRecord')) {
+		let type = text(doc, 'h2 small').toLowerCase();
+		if (type.includes('dvd')) {
+			return 'film';
+		}
+		else if (type.includes('audio')) {
+			return 'audioRecording';
+		}
+		else {
+			return 'book';
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.related-manifestation tr'); // grouped works
+	for (let row of rows) {
+		let href = attr(row, 'a[href*="/Record/"]', 'href');
+		
+		let bookTitle = text(row.closest('.result') || doc.body, '.result-title');
+		let format = text(row.closest('.related-manifestation'),
+			'.manifestation-format a')
+			.replace(/[+-]/, '').trim();
+		let year = text(row, 'td', 0).replace(/[.,;:[\]]/g, '');
+		let formatAndYear = [format, year].filter(x => x).join(', ');
+		
+		let title = bookTitle
+			? ZU.trimInternal(`${bookTitle} (${formatAndYear})`)
+			: ZU.trimInternal(formatAndYear);
+		
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, _url) {
+	var lines = doc.querySelectorAll('#formattedMarcRecord table tbody tr');
+	
+	var translator = Zotero.loadTranslator("import");
+	translator.setTranslator("a6ee60df-1ddc-4aae-bb25-45e0537be973"); // MARC
+	translator.getTranslatorObject(function (marc) {
+		var record = new marc.record();
+		var item = new Zotero.Item();
+		record.leader = text(lines[0], 'td');
+		for (let line of Array.from(lines).slice(2)) {
+			let fieldTag = text(line, 'th');
+			let indicators = text(line, 'th', 0) + text(line, 'th', 1);
+			let fieldContent = text(line, 'td').replace(/\|/g, marc.subfieldDelimiter);
+
+			record.addField(fieldTag, indicators, fieldContent);
+		}
+		
+		record.translate(item);
+		
+		item.libraryCatalog = attr(doc, 'meta[property="og:site_name"]', 'content')
+			|| attr(doc, '#header-logo', 'alt')
+			|| 'Library Catalog (Pika)';
+		
+		item.complete();
+	});
+}

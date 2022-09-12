@@ -1,0 +1,50 @@
+function detectWeb(doc, _url) {
+	if (attr(doc, 'meta[name="contenttype"]', 'content').toLowerCase().includes('publication')) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('table a.LinkTitle[href*="/Blurbs/"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (title.includes('TR News')) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, _url) {
+	let loginURL = attr(doc, '.file-container a[href*="record_id"]', 'href');
+	let recordID = loginURL.match(/record_id=([^&]+)/)[1];
+	
+	var translator = Zotero.loadTranslator('web');
+	// National Academies Press
+	translator.setTranslator('f76afa52-0524-440e-98ba-7c0c10a7b693');
+
+	translator.getTranslatorObject(function (trans) {
+		let napURL = `https://www.nap.edu/catalog/${recordID}`;
+		trans.scrapeFromURL(napURL);
+	});
+}

@@ -1,0 +1,153 @@
+function detectWeb(doc, url) {
+	var title = doc.getElementById('title');
+	if (title && ZU.xpath(title, './/a[@id="export-article-link"]').length) {
+		return "journalArticle";
+	} else if (getSearchResults(doc, true)){
+		return "multiple";
+	}
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//div[contains(@class, "search-results")]//div[contains(@class, "row")]//h5/a');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(cleanMath(rows[i].textContent));
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+// Extension to mimeType mapping
+var suppTypeMap = {
+	'pdf': 'application/pdf',
+	'zip': 'application/zip',
+	'doc': 'application/msword',
+	'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+	'xls': 'application/vnd.ms-excel',
+	'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+	'mov': 'video/quicktime'
+};
+
+var dontDownload = [
+	'application/zip',
+	'video/quicktime'
+];
+
+function scrape(doc, url) {
+	url = url.replace(/[?#].*/, '');
+	
+	if (url.indexOf('/abstract/') == -1) {
+		// Go to Abstract page first so we can scrape the abstract
+		url = url.replace(/\/(?:supplemental|references|cited-by)\//, '/abstract/');
+		if (url.indexOf('/abstract/') == -1) {
+			Zotero.debug('Unrecognized URL ' + url);
+			return;
+		}
+		
+		ZU.processDocuments(url, function(doc, url) {
+			if (url.indexOf('/abstract/') == -1) {
+				Zotero.debug('Redirected when trying to go to abstract page. ' + url);
+				return;
+			}
+			scrape(doc, url)
+		});
+		return;
+	}
+	
+	url = url.replace(/\/abstract\//, '/{REPLACE}/');
+	
+	// fetch RIS
+	var risUrl = url.replace('{REPLACE}', 'export')
+			   + '?type=ris&download=true';
+	ZU.doGet(risUrl, function(text) {
+		text = text.replace(/^ID\s+-\s+/mg, 'DO  - ');
+		var trans = Zotero.loadTranslator('import');
+		trans.setTranslator('32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7'); //RIS
+		trans.setString(text);
+		trans.setHandler('itemDone', function(obj, item) {
+			// scrape abstract from page
+			item.abstractNote = ZU.trimInternal(cleanMath(
+				ZU.xpathText(doc, '//section[contains(@class,"abstract")]/div[@class="content"]/p[1]')
+			));
+			
+			// attach PDF
+			if (ZU.xpath(doc, '//div[@class="article-nav-actions"]/a[contains(text(), "PDF")]').length) {
+				item.attachments.push({
+					title: 'Full Text PDF',
+					url: url.replace('{REPLACE}', 'pdf'),
+					mimeType: 'application/pdf'
+				});
+			}
+			
+			item.attachments.push({
+				title: "APS Snapshot",
+				document: doc
+			});
+			
+			if (Z.getHiddenPref && Z.getHiddenPref('attachSupplementary')) {
+				ZU.processDocuments(url.replace('{REPLACE}', 'supplemental'), function(doc) {
+					try {
+						var asLink = Z.getHiddenPref('supplementaryAsLink');
+						var suppFiles = doc.getElementsByClassName('supplemental-file');
+						for (var i=0; i<suppFiles.length; i++) {
+							var link = suppFiles[i].getElementsByTagName('a')[0];
+							if (!link || !link.href) continue;
+							var title = link.getAttribute('data-id') || 'Supplementary Data';
+							var type = suppTypeMap[link.href.split('.').pop()];
+							if (asLink || dontDownload.indexOf(type) != -1) {
+								item.attachments.push({
+									title: title,
+									url: link.href,
+									mimeType: type || 'text/html',
+									snapshot: false
+								});
+							} else {
+								item.attachments.push({
+									title: title,
+									url: link.href,
+									mimeType: type
+								});
+							}
+						}
+					} catch (e) {
+						Z.debug('Could not attach supplemental data');
+						Z.debug(e);
+					}
+				}, function() { item.complete() });
+			} else {
+				item.complete();
+			}
+		});
+		trans.translate();
+	});
+}
+
+function cleanMath(str) {
+	//math tags appear to have duplicate content and are somehow left in even after textContent
+	return str.replace(/<(math|mi)[^<>]*>.*?<\/\1>/g, '');
+}

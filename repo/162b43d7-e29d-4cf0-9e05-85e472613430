@@ -1,0 +1,70 @@
+function detectWeb(doc, url) {
+	if (doc.querySelector('article[itemtype="http://schema.org/Dataset"]')) {
+		return "document"; // will map to dataset
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('h3.dataset-heading a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	// Data.gov gives us RDF, but it uses some schemas that the RDF translator
+	// doesn't understand, so for now we'll use the embedded Schema.org
+	// metadata.
+	
+	let item = new Zotero.Item('document');
+	item.extra = 'Type: dataset\n'; // will map to dataset
+	
+	let art = doc.querySelector('article[itemtype="http://schema.org/Dataset"]');
+	
+	item.title = text(art, '[itemprop="name"]');
+	item.abstractNote = text(art, '[itemprop="description"]');
+	item.publisher = text(art, '[itemprop="publisher"] [itemprop="name"]');
+	item.language = 'en';
+	item.url = url;
+	
+	for (let row of art.querySelectorAll('[rel="dc:relation"]')) {
+		let label = text(row, '[property="rdfs:label"]').trim();
+		let value = text(row, '[property="rdf:value"]');
+		if (label == 'Data Last Modified') {
+			item.date = ZU.strToISO(value);
+			break;
+		}
+		else if (label == 'Language') {
+			item.language = value;
+		}
+	}
+	
+	for (let tag of doc.querySelectorAll('.tag')) {
+		item.tags.push(tag.textContent);
+	}
+	
+	item.complete();
+}

@@ -1,0 +1,102 @@
+function detectWeb(doc, url) {
+	//The url of books contains the ISBN (i.e. 9 digits) where the 
+	//url of journals contains the ISSN (i.e. 4 digits).
+	if (url.indexOf('/product/')>-1 && url.search(/\d{9}/)>-1) {
+		return 'book';
+	} else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//td[contains(@class, "result_biblio")]//a[contains(@href, "/academic/product/")]');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var item = new Zotero.Item("book");
+
+	var subTitle = doc.getElementsByClassName('product_biblio_strapline')[0];
+	item.title = ZU.trimInternal(doc.getElementsByClassName('product_biblio_title')[0].textContent);
+	if (subTitle) {
+		item.title += ': ' + ZU.trimInternal(subTitle.textContent);
+	}
+	
+	var edition = ZU.xpathText(doc, '//div[@id="overview_tab"]/div[@id="content"]/p[contains(., "Edition")]');
+	if (edition) {
+		item.edition = edition;
+	}
+
+	var creators = ZU.xpath(doc, '//div[@id="content"]/h3[contains(@class, "product_biblio_author")]/b');
+	var role = "author";//default
+	if (ZU.xpathText(doc, '//div[@id="content"]/h3[contains(@class, "product_biblio_author")]').indexOf("Edited by")>-1) {
+		role = "editor";
+	}
+	for (var i=0; i<creators.length; i++) {
+		var creator = creators[i].textContent;
+		creator = creator.replace(/^(Prof|Dr)/, '');
+		item.creators.push(ZU.cleanAuthor(creator, role));
+	}
+	
+	var date = ZU.xpathText(doc, '//div[contains(@class, "product_sidebar")]/p[starts-with(., "Published:")]');
+	if (date) {
+		item.date = ZU.strToISO(date);
+	}
+	
+	item.ISBN = ZU.xpathText(doc, '//div[contains(@class, "product_sidebar")]/p[starts-with(., "ISBN:")]');
+	
+	var pages = ZU.xpathText(doc, '//div[contains(@class, "product_sidebar")]/p[contains(., "Pages")]');
+	if (pages) {
+		var m = pages.match(/(\d+) Pages/);
+		if (m) {
+			item.numPages = m[1];
+		}
+	}
+	
+	item.series = ZU.xpathText(doc, '(//h3[contains(@class, "product_biblio_series_heading")])[1]');
+
+	item.publisher = "Oxford University Press";
+	item.place = "Oxford, New York";
+
+	var abs = ZU.xpathText(doc, '//div[@id="description_tab"]//div[contains(@class, "expanding_content_container_inner_narrow")]');
+	if (abs) {
+		item.abstractNote = abs;
+	}
+	
+	item.attachments.push({
+		title: "Snapshot",
+		document: doc
+	});
+		
+	item.complete();
+}

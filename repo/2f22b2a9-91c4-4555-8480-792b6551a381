@@ -1,0 +1,116 @@
+function detectWeb(doc, url) {
+	if (url.includes('/book/')) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.resultsurl > a[href*="/book/"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	// translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		var authors = doc.querySelectorAll('.purchase-item-detail-title-desktop .author>a');
+		var authorString = text(doc, '.author-info');
+		var type = "author";
+
+		if (authorString.includes("Edited by")) {
+			type = "editor";
+		}
+		
+		for (let author of authors) {
+			item.creators.push(ZU.cleanAuthor(author.textContent, type));
+		}
+		
+		// Some authors aren't hyperlinked
+		if (authorString.includes(",")) {
+			// grab the text-only content of the author string
+			var moreAuthors = ZU.xpathText(doc, '//div[@class="purchase-item-detail-title-desktop"]//p[contains(@class, "author")]/text()');
+			// clean it.
+			moreAuthors = moreAuthors.replace(/^[^,]*[,\s]*/, "").replace(/^and/, "");
+			moreAuthors = moreAuthors.split(/,\s(?:and )?|\sand\s/);
+			for (let author of moreAuthors) {
+				item.creators.push(ZU.cleanAuthor(author, type));
+			}
+		}
+		var editors = text(doc, '.editor');
+		if (editors) {
+			var editorType = "editor";
+	
+			if (editors.includes("Translated by")) {
+				editorType = "translator";
+			}
+			editors = editors.replace(/.+?\sby\s/, "");
+			editors = editors.split(/,\s(?:and )?|\sand\s/);
+			for (let editor of editors) {
+				item.creators.push(ZU.cleanAuthor(editor, editorType));
+			}
+		}
+
+		// title in metadata is without subtitle
+		var subtitle = text(doc, '.purchase-item-detail-title-desktop h2');
+		
+		if (!item.title.includes(subtitle)) {
+			item.title += ": " + subtitle;
+		}
+		var details = text(doc, '.purchase-item-detail-details');
+		
+		if (details) {
+			let numPages = details.match(/(\d+)\s*pages/);
+			if (numPages) item.numPages = numPages[1];
+		}
+		
+		var publisher = text(doc, '.purchase-item-detail-distributor a');
+		
+		if (publisher) {
+			item.publisher = publisher;
+		}
+		else {
+			item.publisher = "University of Chicago Press";
+			item.place = "Chicago, IL";
+		}
+		
+		item.series = text(doc, '.series-name');
+
+		item.date = ZU.strToISO(text(doc, '.purchase-format-pubdate'));
+		item.ISBN = ZU.cleanISBN(text(doc, '.purchase-format-isbn'));
+		item.libraryCatalog = "University of Chicago Press";
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.addCustomFields({
+		});
+		trans.doWeb(doc, url);
+	});
+}

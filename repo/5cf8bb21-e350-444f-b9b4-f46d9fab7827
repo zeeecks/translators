@@ -1,0 +1,129 @@
+function detectWeb(doc, url) {
+	if (url.includes("/vollanzeige.pl?")) {
+		return "journalArticle";
+	}
+	else if (url.includes("/suche.pl?") && getSearchResults(doc, true)) {
+		return 'multiple';
+	}
+	return false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Z.selectItems(getSearchResults(doc, false), function (data) {
+			if (!data) return;
+			ZU.processDocuments(Object.keys(data), scrape);
+		});
+	}
+	else if (detectWeb(doc, url) == "journalArticle") {
+		scrape(doc, url);
+	}
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var trs = doc.getElementsByTagName("tr"),
+		data = {},
+		found = false;
+
+	for (var i = 1; i < trs.length; i++) {
+		var tds = trs[i].getElementsByTagName("td");
+		var url = ZU.xpathText(tds, './a/@href'),
+			author = tds[1].textContent,
+			title = tds[2].textContent.replace(/<br>/g, '. ');
+		var item;
+		if (author) {
+			item = title + " (" + author.replace(/;.*/, ' et al.') + ")";
+		}
+		else {
+			item = title;
+		}
+		if (!item || !url) continue;
+		
+		if (checkOnly) return true;
+		found = true;
+
+		data[url] = item;
+	}
+	return found ? data : false;
+}
+
+function scrape(doc, _url) {
+	var newItem = new Zotero.Item('journalArticle');
+	var trs = doc.getElementsByTagName("tr"),
+		data = {};
+
+	for (var i = 0; i < trs.length; i++) {
+		var headers = trs[i].getElementsByTagName("th")[0].textContent;
+		var contents = trs[i].getElementsByTagName("td")[0].innerHTML;
+
+		data[headers.replace(/\s+/g, '')] = contents.trim();
+	}
+
+	// set url to fulltext resource, if present
+	if (data.URL) {
+		newItem.url = data.URL.replace(/<a.*?href="(.*?)".*/, "$1");
+
+		if (/\.pdf(#.*)?$/.test(newItem.url)) {
+			newItem.attachments = [{
+				url: newItem.url,
+				title: "DABI Full Text PDF",
+				mimeType: "application/pdf"
+			}];
+			delete newItem.url;
+		}
+	}
+
+	// Formatting and saving "title" fields
+	// Sometimes titles are missing
+	if (!data.Titel) {
+		data.Titel = data.Untertitel;
+		delete data.Untertitel;
+	}
+	
+	if (data.Titel) {
+		newItem.title = data.Titel.replace(/\*/g, '');
+		
+		if (data.Untertitel) {
+			if (/(\?|!|\.)\W?$/.test(newItem.title)) {
+				newItem.title += " " + data.Untertitel;
+			}
+			else {
+				newItem.title += ": " + data.Untertitel;
+			}
+		}
+	}
+
+	// Formatting and saving "Author" field
+	if (data.Autoren) {
+		var authors = data.Autoren.split("; ");
+		for (let author of authors) {
+			newItem.creators.push(ZU.cleanAuthor(author, "author", true));
+		}
+	}
+
+	// Formatting and saving "pages" field
+	if (data.Anfangsseite > 0) {
+		newItem.pages = data.Anfangsseite + (data.Endseite > data.Anfangsseite ? "-" + data.Endseite : "");
+	}
+
+	// Saving the tags to Zotero
+	if (data["Schlagwörter"]) {
+		newItem.tags = data["Schlagwörter"].split("; ");
+	}
+
+	// Making the publication title orthographic
+	if (data.Zeitschrift) {
+		newItem.publicationTitle = data.Zeitschrift.replace(/ : /g, ": ");
+	}
+
+	// Associating and saving the well formatted data to Zotero
+	newItem.date = data.Jahr;
+	newItem.issue = data.Heft;
+	newItem.volume = data.Band;
+	newItem.abstractNote = data.Abstract;
+	
+	// Scrape is COMPLETE!
+	newItem.complete();
+}

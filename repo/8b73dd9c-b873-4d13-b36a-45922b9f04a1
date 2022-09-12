@@ -1,0 +1,76 @@
+function detectWeb(doc, url) {
+	if (url.includes("/plusd/?") && getSearchResults(doc, url, true)) {
+		return "multiple";
+	}
+	else if (url.includes("/plusd/cables/")) {
+		return "report";
+	}
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var toc = doc.getElementById("doc_list");
+	var rows = ZU.xpath(toc, '//tr[@class="sclick"]/td[3]/a[contains(@href, "/cables/")]');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = new Array();
+			for (var i in items) {
+				articles.push(i);
+			}
+			//Z.debug(articles)
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+var fieldMap = {
+	"canonical id": "reportNumber",
+	"from": "publisher", //not sure -- could also be place
+	"date": "date"
+};
+function scrape(doc, url) {
+	var item = new Zotero.Item('report');
+	item.url = url;
+	item.title = ZU.capitalizeTitle(ZU.xpathText(doc, '//table[@id="synopsis"]/tbody/tr[1]').trim().toLowerCase(), true);
+	var nodes = ZU.xpath(doc, '//table[@id="synopsis"]/tbody/tr/td');
+	for (var i = 0; i<nodes.length; i++) {
+		var key = ZU.xpathText(nodes[i], './div[@class="s_key"]');
+		var value = ZU.xpathText(nodes[i], './div[@class="s_val"]');
+		if (key) {
+			key = key.replace(/:/g, "").toLowerCase();
+		}
+		//Z.debug(key + ": " + value)
+		if (fieldMap[key] && value){
+			item[fieldMap[key]] = value;
+		}
+		else if (key == "tags") {
+			var tags = value.split(/\s*\|\s*/);
+			for (var j = 0; j<tags.length; j++){
+				item.tags.push(tags[j]);
+			}
+		}
+	}
+	//not sure here about mapping
+	item.reportType = "Wikileaks Public Library of US Diplomacy";
+	item.attachments.push({document: doc, title: "WikiLeaks PLUSD Snapshot"});
+	item.complete();
+}

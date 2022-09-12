@@ -1,0 +1,54 @@
+function detectWeb(doc, _url) {
+	if (doc.querySelector('.content-header__rubric--issue-date')) {
+		return 'magazineArticle';
+	}
+	if (doc.querySelector('time.content-header__publish-date')) {
+		return 'blogPost';
+	}
+	return false;
+}
+
+function doWeb(doc, url) {
+	// no multiples - Vanity Fair seems to detect headless browsers and gives
+	// a 402 error
+	scrape(doc, url);
+}
+
+function scrape(doc, url) {
+	let itemType = detectWeb(doc, url);
+	let item = new Zotero.Item(itemType);
+	item.url = url;
+	item.attachments = [{ document: doc, title: 'Snapshot' }];
+
+	let author = text(doc, '.byline__name');
+	if (author) item.creators = [ZU.cleanAuthor(author, 'author')];
+
+	let date = text(doc, 'time.content-header__publish-date');
+	if (date) item.date = ZU.strToISO(date);
+
+	item.language = "en-US";
+	item.ISSN = "0733-8899";
+	item.title = text(doc, 'h1');
+
+	let issue;
+	switch (itemType) {
+		case 'magazineArticle':
+			item.abstractNote = text(doc, '.dek');
+
+			issue = text(doc, '.content-header__rubric--issue-date');
+			if (issue) item.issue = issue.replace(/\s.*/, '');
+
+			item.publicationTitle = "Vanity Fair";
+			item.tags = attr(doc, 'meta[name="keywords"]', 'content').split(',').filter(tag => !tag.startsWith('_legacy_/'));
+			break;
+
+		case 'blogPost':
+			item.blogTitle = "Vanity Fair Blogs";
+			break;
+
+		default:
+			throw new Error(`Unexpected item type ${itemType}`);
+	}
+
+	item.complete();
+}

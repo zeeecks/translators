@@ -1,0 +1,93 @@
+// attr()/text() v2
+function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null;}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null;}
+
+
+function detectWeb(doc, url) {
+	if (url.includes("encore/record")) {
+		return "book";
+	} else if (url.includes("encore/search")) {
+		return "multiple";
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a[id^=recordDisplayLink2Component]');
+	for (let i = 0; i < rows.length; i++) {
+		let href = createMarcURL(rows[i].href);
+		let title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function(items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			scrape(articles);
+		});
+	} else {
+		var marcURL = createMarcURL(url);
+		scrape([marcURL]);
+	}
+}
+
+function createMarcURL(url) {
+	//construct the marc URL
+	return url.replace(/\?/, "?marcData=Y&");
+}
+
+function scrape(marcURL) {
+	for (let i = 0; i < marcURL.length; i++) {
+		//Z.debug(marcURL[i])
+		// the library catalogue name isn't perfect, but should be unambiguous. 
+		var domain = marcURL[i].match(/https?:\/\/([^/]+)/);
+		ZU.doGet(marcURL[i], function(text) {
+			var translator = Zotero.loadTranslator("import");
+			translator.setTranslator("a6ee60df-1ddc-4aae-bb25-45e0537be973");
+			translator.getTranslatorObject(function(marc) {
+				var record = new marc.record();
+				var newItem = new Zotero.Item();
+				text = text.replace(/^\n/mg, '') // skip empty lines
+						.replace(/\s?\n\s+/gm, ' '); // delete line breaks when only needed for displaying long lines
+				//Z.debug(text);
+				var line = text.split("\n");
+				for (var j = 0; j < line.length; j++) {
+					line[j] = line[j].replace(/[\xA0_\t]/g, " ");
+					var value = line[j].substr(7);
+					if (line[j].substr(0, 6) == "LEADER") {
+						// trap leader
+						record.leader = value;
+					} else {
+						var tag = line[j].substr(0, 3);
+						var ind = line[j].substr(4, 2);
+						if (value) {
+							value = value.replace(/\|(.)/g, marc.subfieldDelimiter + "$1");
+							if (value[0] != marc.subfieldDelimiter) {
+								value = marc.subfieldDelimiter + "a" + value;
+							}
+							record.addField(tag, ind, value);
+						}
+					}
+				}
+
+				record.translate(newItem);
+				newItem.repository = domain[1].replace(/encore\./, "");
+				// there is too much stuff in the note field - or file this as an abstract?
+				newItem.notes = [];
+				newItem.complete();
+			});
+		});
+	}
+}

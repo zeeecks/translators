@@ -1,0 +1,167 @@
+/*
+The various types of Google Books URLs are:
+
+Search results - List view
+http://books.google.com/books?q=asimov&btnG=Search+Books
+
+Search results - Cover view
+http://books.google.com/books?q=asimov&btnG=Search%20Books&rview=1
+
+Single item - URL with "id"
+http://books.google.com/books?id=skf3LSyV_kEC&source=gbs_navlinks_s
+http://books.google.com/books?hl=en&lr=&id=Ct6FKwHhBSQC&oi=fnd&pg=PP9&dq=%22Peggy+Eaton%22&ots=KN-Z0-HAcv&sig=snBNf7bilHi9GFH4-6-3s1ySI9Q#v=onepage&q=%22Peggy%20Eaton%22&f=false
+
+Single item - URL with "vid" (see http://code.google.com/apis/books/docs/static-links.html)
+http://books.google.com/books?printsec=frontcover&vid=ISBN0684181355&vid=ISBN0684183951&vid=LCCN84026715#v=onepage&q&f=false
+
+Single item - New Google Books November 2019
+https://www.google.com/books/edition/_/U4NmPwAACAAJ?hl=en
+
+Personal play store book lists
+https://play.google.com/books (no test)
+
+Play Store Individual Books
+https://play.google.com/store/books/details/Adam_Smith_The_Wealth_of_Nations?id=-WxKAAAAYAAJ
+
+Play Store Book Searches
+https://play.google.com/store/search?q=doyle+arthur+conan&c=books
+*/
+// attr()/text() v2
+// eslint-disable-next-line
+function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null;}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null;}
+
+
+function detectWeb(doc, url) {
+	if (url.search(/[&?]v?id=/) != -1) {
+		return "book";
+	}
+	else if (url.includes("/books/edition/")) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	// regular books
+	var rows = ZU.xpath(doc, '//div[@class="srg"]//a[h3]');
+	if (!rows.length) {
+		// play store
+		rows = doc.querySelectorAll('div.Q9MA7b>a');
+	}
+	for (let row of rows) {
+		let href = row.href;
+		// h3 for google books, div for google play
+		let title = text(row, 'h3, div');
+		// exclude audiobooks on google play
+		// audiobooks aren't in Google's book metadata
+		if (!href || !title || href.includes("/store/audiobooks/")) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = ZU.trimInternal(title);
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var id;
+	// New books format:
+	if (url.includes("/books/edition/")) {
+		id = url.split('/').pop().split('?')[0];
+	}
+	// All old formats with explicit id, including play store
+	else if (url.search(/[&?]id=/) != -1) {
+		id = url.match(/[&?]id=([^&]+)/)[1];
+	}
+	else if (url.search(/[&?]vid=/) != -1) {
+		var canonicalUrl = ZU.xpath(doc, '/html/head/link[@rel="canonical"]')[0].href;
+		id = canonicalUrl.match(/[&?]id=([^&]+)/)[1];
+	}
+	
+	// somewhat of a hack to recover from a rare situation in which the XML
+	// doesn't have a dc:title tag (bad metadata on Google's end).
+	// the Google Books suffix appears consistent across languages.
+	let fallbackTitle = doc.title.replace(/(\s*-\s*)?Google Books/, '');
+	ZU.doGet("//books.google.com/books/feeds/volumes/" + id,
+		text => parseXML(text, fallbackTitle));
+}
+
+function parseXML(text, fallbackTitle) {
+	// Z.debug(text);
+	// Remove xml parse instruction and doctype
+	var parser = new DOMParser();
+	var xml = parser.parseFromString(text, "text/xml").documentElement;
+	
+	var ns = { dc: "http://purl.org/dc/terms",
+		atom: "http://www.w3.org/2005/Atom" };
+		
+	var newItem = new Zotero.Item("book");
+	
+	var authors = ZU.xpath(xml, "dc:creator", ns);
+	for (let author of authors) {
+		newItem.creators.push(ZU.cleanAuthor(author.textContent, "author"));
+	}
+	
+	var pages = ZU.xpathText(xml, "dc:format", ns);
+	const pagesRe = /(\d+)( pages)/;
+	var pagesMatch = pagesRe.exec(pages);
+	if (pagesMatch !== null) {
+		newItem.numPages = pagesMatch[1];
+	}
+	else {
+		newItem.numPages = pages;
+	}
+	
+	var ISBN;
+	const ISBN10Re = /(?:ISBN:)(\w{10})$/;
+	const ISBN13Re = /(?:ISBN:)(\w{13})$/;
+	const booksIDRe = /^(\w{12})$/;
+	var identifiers = ZU.xpath(xml, "dc:identifier", ns);
+	for (let identifier of identifiers) {
+		var ISBN10Match = ISBN10Re.exec(identifier.textContent);
+		var ISBN13Match = ISBN13Re.exec(identifier.textContent);
+		var booksIDMatch = booksIDRe.exec(identifier.textContent);
+		if (ISBN10Match !== null) {
+			ISBN = ISBN10Match[1];
+		}
+		if (ISBN13Match !== null) {
+			ISBN = ISBN13Match[1];
+		}
+		if (booksIDMatch !== null) {
+			newItem.extra = "Google-Books-ID: " + booksIDMatch[1];
+		}
+	}
+	newItem.ISBN = ISBN;
+	
+	newItem.publisher = ZU.xpathText(xml, "dc:publisher", ns);
+	newItem.title = ZU.xpathText(xml, "dc:title", ns, ": ") || fallbackTitle;
+	newItem.language = ZU.xpathText(xml, 'dc:language', ns);
+	newItem.abstractNote = ZU.xpathText(xml, 'dc:description', ns);
+	newItem.date = ZU.xpathText(xml, "dc:date", ns);
+
+	var url = "/books?id=" + identifiers[0].textContent;
+	newItem.attachments = [{ title: "Google Books Link", snapshot: false, mimeType: "text/html", url: url }];
+	
+	var subjects = ZU.xpath(xml, 'dc:subject', ns);
+	for (let subject of subjects) {
+		newItem.tags.push(subject.textContent);
+	}
+	
+	newItem.complete();
+}

@@ -1,0 +1,70 @@
+function detectWeb(doc, _url) {
+	if (doc.querySelector('meta[name^="citation_"]')) {
+		return "journalArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	// actual search result pages don't use <a> tags and instead emulate tags
+	// with JS onclick, so this is just for topics/collections
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.article-list .teaser-heading a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let risURL = attr(doc, '.citation a[href$="/reference"]', 'href');
+	if (!risURL) {
+		risURL = url.replace(/\/full([?#].*)?$/, '/reference');
+	}
+	let pdfURL = attr(doc, '.download-files-pdf', 'href');
+	if (!pdfURL) {
+		pdfURL = url.replace(/\/full([?#].*)?$/, '/pdf');
+	}
+	
+	ZU.doGet(risURL, function (risText) {
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7"); // RIS
+		translator.setString(risText);
+		translator.setHandler("itemDone", function (obj, item) {
+			if (pdfURL) {
+				item.attachments.push({
+					url: pdfURL,
+					title: 'Full Text PDF',
+					mimeType: 'application/pdf'
+				});
+			}
+			
+			if (item.journalAbbreviation == item.publicationTitle) {
+				delete item.journalAbbreviation;
+			}
+			
+			item.complete();
+		});
+		translator.translate();
+	});
+}

@@ -1,0 +1,193 @@
+function detectWeb(doc, url) {
+	if (ZU.xpathText(doc, '//meta[@name="citation_journal_title"]/@content')) {
+		return 'journalArticle';
+	} else if (url.indexOf('doSearch?') != -1 &&
+		ZU.xpath(doc, '//form[contains(@id, "Search")]\
+			//a[contains(@href, "abstract") or contains(@href, "fulltext")]') ) {
+		return 'multiple';
+	}
+}
+
+function scrape(doc, url) {
+	//use Embedded Metadata
+	var translator = Zotero.loadTranslator('web');
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+
+	translator.setHandler('itemDone', function(obj, item) {
+		//occasionally creators are not supplied,
+		//but we can get them from the page
+		if (!item.creators.length) {
+			var creators = ZU.xpath(doc, '//div[@id="article_meta"]\
+								//p[./a[starts-with(@href,"mailto:")]]/strong');
+			for (var i=0, n=creators.length; i<n; i++) {
+				item.creators.push(
+					ZU.cleanAuthor(creators[i].textContent, 'author'));
+			}
+		}
+		
+		//normalize date
+		if (item.date) {
+			item.date = ZU.strToISO(item.date);
+		}
+		
+		//delete dublicate PMID in extra field
+		if (item.extra) {
+			var m = item.extra.match(/PMID: (\d+), (\d+)/);
+			if (m && m[1]==m[2]) {
+				item.extra = "PMID: " + m[1];
+			}
+		}
+		
+		//extend relativ urls
+		if (item.url && item.url.indexOf("http") == -1) {
+			item.url = "http://www.cell.com" + item.url;
+		}
+
+		var abstractDiv = doc.getElementById('main_fulltext_content');
+		var abstract = ZU.xpathText(doc, '//div[contains(@class, "abstract")]/div[contains(@class, "content")]/p')
+			item.abstractNote = abstract;
+
+		//fetch direct PDF link (ScienceDirect)
+		var pdfUrl;
+		for (var i=0, n=item.attachments.length; i<n; i++) {
+			if (item.attachments[i].mimeType &&
+				item.attachments[i].mimeType == 'application/pdf') {
+				pdfUrl = item.attachments[i].url;
+				//delete attachment
+				item.attachments.splice(i,1);
+				n--;
+				i--;
+			}
+		}
+		
+		if (pdfUrl) {
+			ZU.doGet(pdfUrl, function(text) {
+				if (text.indexOf('onload="javascript:redirectToScienceURL();"') != -1) {
+					var m = text.match(/value\s*=\s*"([^"]+)"/);
+					if (m) {
+						pdfUrl = m[1];
+					}
+				} else if (text.indexOf('onload="javascript:trackPDFDownload();"') != -1) {
+					pdfUrl += (pdfUrl.indexOf('?') != -1 ? '&' : '?') +
+								'intermediate=true';
+				}
+				
+				item.attachments.push({
+					title: 'Full Text PDF',
+					url: pdfUrl,
+					mimeType: 'application/pdf'
+				});
+				
+				finalize(item, doc, url, pdfUrl);
+			});
+		} else {
+			finalize(item, doc, url, pdfUrl);
+		}
+	});
+
+	translator.translate();
+}
+
+//mimetype map for supplementary attachments
+//intentionally excluding potentially large files like videos and zip files
+var suppTypeMap = {
+	'pdf': 'application/pdf',
+	'doc': 'application/msword',
+	'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+	'xls': 'application/vnd.ms-excel',
+	'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+};
+
+function finalize(item, doc, url, pdfUrl) {
+	if (Z.getHiddenPref && Z.getHiddenPref('attachSupplementary')) {
+		try {
+			//check if there is supplementary data
+			var tabs = doc.getElementById('aotftabs');
+			var suppLink;
+			if (tabs) {
+				//enhanced view (AJAX driven), but let's see if we even have supp. data
+				suppLink = ZU.xpath(tabs, './/a[@href="#suppinfo"]')[0];
+				if (suppLink) {
+					//construct a link to the standard view of supp. data
+					suppLink = url.replace(/[^\/]+(?=\/[^\/]*$)/, 'supplemental')
+						.replace(/[?#].*/, '');
+				}
+			} else if (tabs = doc.getElementById('article_options')) {
+				//standard view
+				suppLink = ZU.xpathText(tabs, './/a[text()="Supplemental Data"]/@href');
+			}
+			if (suppLink) {
+				if (Z.getHiddenPref('supplementaryAsLink')) {
+					item.attachments.push({
+						title: 'Supplementary Data',
+						url: suppLink,
+						mimeType: 'text/html',
+						snapshot: false
+					});
+				} else {
+					ZU.processDocuments(suppLink, function(suppDoc) {
+						var suppEntries = ZU.xpath(suppDoc, '//div[@id="main_supp"]/dl/dt');
+						for (var i=0, n=suppEntries.length; i<n; i++) {
+							var link = suppEntries[i].getElementsByTagName('a')[0];
+							if (!link) return;
+							
+							link = link.href;
+							
+							var title = ZU.trimInternal(suppEntries[i].textContent)
+								.replace(/\s*\([^()]+kb\)$/, '');
+							var desc = suppEntries[i].nextSibling;
+							if (desc && desc.nodeName.toUpperCase() == 'DD'
+								&& (desc = ZU.trimInternal(desc.textContent))) {
+								if (title) title += ': ';
+								title += desc;
+							}
+							
+							var mimeType = suppTypeMap[link.substr(link.lastIndexOf('.')+1)];
+							
+							item.attachments.push({
+								title: title,
+								url: link,
+								mimeType: mimeType,
+								snapshot: !!mimeType
+							});
+						}
+					}, function() { item.complete(); });
+					return;
+				}
+			}
+			item.complete();
+		} catch(e) {
+			Z.debug("Error attaching supplementary data.");
+			Z.debug(e);
+			item.complete();
+		}
+	} else {
+		item.complete();
+	}
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == 'multiple') {
+		var res = ZU.xpath(doc,'//form[contains(@id, "Search")]\
+									//div[@class="article-details"]');
+		var url, items = new Object();
+		for (var i=0, n=res.length; i<n; i++) {
+			url = ZU.xpathText(res[i], './h2/a/@href');
+			if (url) {
+				items[url] = ZU.xpathText(res[i], './h2/a');
+			}
+		}
+		Zotero.selectItems(items, function(selectedItems) {
+			if (!selectedItems) return true;
+
+			var urls = new Array();
+			for (var i in selectedItems) {
+				urls.push(i);
+			}
+			ZU.processDocuments(urls, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}

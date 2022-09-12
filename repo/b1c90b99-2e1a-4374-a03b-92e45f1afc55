@@ -1,0 +1,116 @@
+/*
+ This translator works on articles posted on the websites of Radio Free Europe / Radio Liberty.
+ It imports the basic metadata the site provides, from normal article pages and from search
+ result pages.
+
+ The translator tries to work on all of the languages of RFE/RL; they should all work.
+ 
+ Editions:
+	English:	http://www.rferl.org/
+	Tatar/Bashkir:	http://www.azatliq.org/
+	Kazakh:		http://www.azattyq.org/	(Kazakh)
+			http://rus.azattyq.org/	(Russian)
+	Afghan:		http://da.azadiradio.com/ (Dari)
+			http://pa.azadiradio.com/ (Pashto)
+			https://gandhara.rferl.org (English)
+	Kirghiz:	http://www.azattyk.org/
+	Tajik:		http://www.ozodi.org/
+	Uzbek:		http://www.ozodlik.org/
+	Albanian:	http://www.evropaelire.org/
+	Bosnian/Montenegrin/Serbian:
+			http://www.slobodnaevropa.org/
+	Macedonian:	http://www.makdenes.org/
+	Iraqi Arabic:	http://www.iraqhurr.org/
+	Farsi:		http://www.radiofarda.com/
+	Armenian:	http://www.azatutyun.am/
+	Azerbaijani:	http://www.azadliq.org/
+	Belarus:	http://www.svaboda.org/
+	Georgian:	http://www.tavisupleba.org/
+	Turkmen:	http://www.azathabar.com/
+	Russian:	http://www.svobodanews.ru/ and svoboda.org
+	Moldovan:	http://www.europalibera.org/ (Romanian)
+	Ukrainian:	http://www.radiosvoboda.org/
+ 
+ This translator does not yet attempt to work with the video files that Radio Liberty
+ hosts and produces; EM covers those.
+
+ Another future improvement would be the facility to import from the front page and subject
+ pages. This is not yet possible.
+*/
+
+function detectWeb(doc, _url) {
+	if (doc.body.classList.contains('pg-article')) {
+		return "newspaperArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.media-block');
+	for (let row of rows) {
+		let link = row.querySelector('.media-block__content > a');
+		if (!link || row.querySelector('.ico-video')) continue; // exclude videos
+		
+		let href = link.href;
+		let title = ZU.trimInternal(link.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		let json = JSON.parse(text(doc, 'script[type="application/ld+json"]'));
+		if (json.author) {
+			let clean = authors => authors
+				.filter(author => author.name && !author.name.startsWith('RFE/RL'))
+				.map(author => ZU.cleanAuthor(ZU.capitalizeName(author.name), 'author'));
+			item.creators = clean(
+				Array.isArray(json.author)
+					? json.author
+					: [json.author]);
+		}
+		
+		item.date = json.dateModified || json.datePublished;
+		item.section = ZU.unescapeHTML(json.articleSection);
+		
+		if (item.publicationTitle == 'RadioFreeEurope/RadioLiberty') {
+			item.publicationTitle = 'Radio Free Europe/Radio Liberty';
+		}
+		
+		if (item.abstractNote) {
+			item.abstractNote = ZU.unescapeHTML(item.abstractNote);
+		}
+		
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = "newspaperArticle";
+		trans.doWeb(doc, url);
+	});
+}

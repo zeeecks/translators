@@ -1,0 +1,66 @@
+function detectWeb(doc, url) {
+	if (url.includes("/JETS_current") || url.includes("/JETS/") || url.includes("/node/")) {
+		return "multiple";
+	}
+	return false;
+}
+
+function doWeb(doc, _url) {
+	let results = getSearchResults(doc, false);
+	if (results) {
+		Zotero.selectItems(results, function (selected) {
+			if (!selected) {
+				return;
+			}
+			for (let url in selected) scrape(selected[url], url);
+		});
+	}
+}
+
+function scrape(titleAuthor, url) {
+	let [title, author] = titleAuthor.split(". . .");
+	let pdfTitle = url.split('/').pop();
+	let [, issue, pages] = pdfTitle.split('_');
+	
+	var item = new Zotero.Item('journalArticle');
+	item.url = url;
+	item.journalAbbreviation = "J. Evang. Theol. Soc."; // ISO 4 abbreviation
+	item.publicationTitle = "Journal of the Evangelical Theological Society";
+	item.title = ZU.trimInternal(title);
+	
+	if (author) {
+		item.creators.push(ZU.cleanAuthor(author, 'author', false));
+	}
+	
+	if (pages.match(/[0-9]+(-[0-9]+)?/)) {
+		item.pages = pages;
+	}
+	[item.volume, item.issue] = issue.split('.');
+
+	item.attachments.push({
+		title: "Full Text PDF",
+		mimeType: 'application/pdf',
+		url: url
+	});
+	
+	item.complete();
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	let results = doc.querySelectorAll('div.content p a');
+
+	for (var result of results) {
+		let href = result.href;
+		let title = ZU.capitalizeTitle(ZU.trimInternal(result.innerText).toLowerCase(), true);
+
+		if (!href || !title || !href.endsWith(".pdf")) continue;
+		if (checkOnly) return true;
+
+		found = true;
+		items[href] = title;
+	}
+
+	return found ? items : false;
+}

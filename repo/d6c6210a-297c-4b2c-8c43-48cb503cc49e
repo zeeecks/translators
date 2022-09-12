@@ -1,0 +1,255 @@
+/*
+   SpringerLink Translator
+   Copyright (C) 2020 Aurimas Vinckevicius and Sebastian Karcher
+
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU Affero General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU Affero General Public License for more details.
+
+   You should have received a copy of the GNU Affero General Public License
+   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+function detectWeb(doc, url) {
+	var action = getAction(url);
+	if (!action) return false;
+	if (!doc.head || !doc.head.getElementsByTagName('meta').length) {
+		Z.debug("Springer Link: No head or meta tags");
+		return false;
+	}
+	switch (action) {
+		case "search":
+		case "journal":
+		case "book":
+		case "referencework":
+			if (getResultList(doc).length > 0) {
+				return "multiple";
+			}
+			return false;
+		case "article":
+			return "journalArticle";
+		case "chapter":
+		case "referenceworkentry":
+		case "protocol":
+			if (ZU.xpathText(doc, '//meta[@name="citation_conference_title"]/@content')) {
+				return "conferencePaper";
+			}
+			else {
+				return "bookSection";
+			}
+	}
+	return false;
+}
+
+function getAction(url) {
+	return (url.match(/^https?:\/\/[^/]+\/([^/?#]+)/) || [])[1];
+}
+
+function getResultList(doc) {
+	var results = ZU.xpath(doc,
+		'//ol[@class="content-item-list"]/li/*[self::h3 or self::h2]/a');
+	if (!results.length) {
+		results = ZU.xpath(doc,
+			'//div[@class="toc"]/ol//div[contains(@class,"toc-item")]/h3/a');
+	}
+	if (!results.length) {
+		results = ZU.xpath(doc,
+			'//div[@class="book-toc-container"]/ol//div[contains(@class,"content-type-list__meta")]/div/a');
+	}
+	if (!results.length) {
+		results = ZU.xpath(doc, '//div[@class="toc"]/ol//li[contains(@class,"toc-item")]/p[@class="title"]/a');
+	}
+	// https://link.springer.com/journal/10344/volumes-and-issues/66-5
+	if (!results.length) {
+		results = ZU.xpath(doc, '//li[@class="c-list-group__item"]//h3/a');
+	}
+	if (!results.length) {
+		results = doc.querySelectorAll('h3.c-card__title > a');
+	}
+	return results;
+}
+
+function doWeb(doc, url) {
+	var type = detectWeb(doc, url);
+	if (type == "multiple") {
+		var list = getResultList(doc);
+		var items = {};
+		if (getAction(url) == 'book') {
+			items[url] = '[Full Book] ' + text(doc, 'main h1');
+		}
+		for (var i = 0, n = list.length; i < n; i++) {
+			items[list[i].href] = list[i].textContent;
+		}
+		Zotero.selectItems(items, function (selectedItems) {
+			if (!selectedItems) return;
+			for (let i in selectedItems) {
+				ZU.processDocuments(i, scrape);
+			}
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function complementItem(doc, item) {
+	var itemType = detectWeb(doc, doc.location.href);
+	// in case we're missing something, we can try supplementing it from page
+	if (!item.DOI) {
+		item.DOI = ZU.xpathText(doc, '//meta[@name="citation_doi"]/@content');
+	}
+	if (!item.language) {
+		item.language = ZU.xpathText(doc, '//meta[@name="citation_language"]/@content');
+	}
+	if (!item.publisher) {
+		item.publisher = ZU.xpathText(doc, '//dd[@id="abstract-about-publisher"]');
+	}
+	if (item.publisher && item.place) {
+		// delete places in publisher's name
+		// e.g. Springer Berlin Heidelberg
+		var places = item.place.split(/[\s,;]/);
+		for (let place of places) {
+			item.publisher = item.publisher.replace(place, '');
+		}
+	}
+	if (!item.date) {
+		item.date = ZU.xpathText(doc, '//dd[@id="abstract-about-cover-date"]') || ZU.xpathText(
+			doc, '//dd[@id="abstract-about-book-chapter-copyright-year"]');
+	}
+	if (item.date) {
+		item.date = ZU.strToISO(item.date);
+	}
+	// copyright
+	if (!item.rights) {
+		item.rights = ZU.xpathText(doc,
+			'//dd[@id="abstract-about-book-copyright-holder"]');
+		var year = ZU.xpathText(doc,
+			'//dd[@id="abstract-about-book-chapter-copyright-year"]');
+		if (item.rights && year) {
+			item.rights = '©' + year + ' ' + item.rights;
+		}
+	}
+
+	if (itemType == "journalArticle") {
+		if (!item.ISSN) {
+			item.ISSN = ZU.xpathText(doc, '//dd[@id="abstract-about-issn" or @id="abstract-about-electronic-issn"]');
+		}
+		if (!item.journalAbbreviation || item.publicationTitle == item.journalAbbreviation) {
+			item.journalAbbreviation = ZU.xpathText(doc, '//meta[@name="citation_journal_abbrev"]/@content');
+		}
+	}
+	if (itemType == 'bookSection' || itemType == "conferencePaper") {
+		// look for editors
+		var editors = ZU.xpath(doc, '//ul[@class="editors"]/li[@itemprop="editor"]/a[@class="person"]');
+		var m = item.creators.length;
+		for (var i = 0, n = editors.length; i < n; i++) {
+			var editor = ZU.cleanAuthor(editors[i].textContent.replace(/\s+Ph\.?D\.?/,
+				''), 'editor');
+			// make sure we don't already have this person in the list
+			var haveEditor = false;
+			for (var j = 0; j < m; j++) {
+				var creator = item.creators[j];
+				if (creator.creatorType == "editor" && creator.lastName == editor.lastName) {
+					// we should also check first name, but this could get
+					// messy if we only have initials in one case but not
+					// the other.
+					haveEditor = true;
+					break;
+				}
+			}
+			if (!haveEditor) {
+				item.creators.push(editor);
+			}
+		}
+		if (!item.ISBN) {
+			item.ISBN = ZU.xpathText(doc, '//dd[@id="abstract-about-book-print-isbn" or @id="abstract-about-book-online-isbn"]')
+				|| ZU.xpathText(doc, '//span[@id="print-isbn" or @id="electronic-isbn"]');
+		}
+		// series/seriesNumber
+		if (!item.series) {
+			item.series = ZU.xpathText(doc, '//dd[@id="abstract-about-book-series-title"]')
+				|| ZU.xpathText(doc, '//div[contains(@class, "ArticleHeader")]//a[contains(@href, "/bookseries/")]')
+				|| text(doc, '.c-chapter-book-series > a');
+		}
+		if (!item.seriesNumber) {
+			item.seriesNumber = ZU.xpathText(doc, '//dd[@id="abstract-about-book-series-volume"]');
+		}
+	}
+	// add the DOI to extra for non journal articles
+	if (item.itemType != "journalArticle" && item.itemType != "conferencePaper" && item.DOI) {
+		item.extra = "DOI: " + item.DOI;
+		item.DOI = "";
+	}
+	// series numbers get mapped to volume; fix this
+	if (item.volume == item.seriesNumber) {
+		item.volume = "";
+	}
+	// add abstract
+	var abs = ZU.xpathText(doc, '//div[contains(@class,"abstract-content")][1]');
+	if (!abs) {
+		abs = ZU.xpathText(doc, '//section[@class="Abstract" and @lang="en"]');
+	}
+	if (abs) item.abstractNote = ZU.trimInternal(abs).replace(/^Abstract[:\s]*/, "");
+	// add tags
+	var tags = ZU.xpathText(doc, '//span[@class="Keyword"]');
+	if (tags && (!item.tags || item.tags.length === 0)) {
+		item.tags = tags.split(',');
+	}
+	tags = doc.querySelectorAll('.c-article-subject-list__subject');
+	if (tags.length && !item.tags.length) {
+		item.tags = [...tags].map(el => el.innerText);
+	}
+	return item;
+}
+
+function scrape(doc, url) {
+	var DOI = url.match(/\/(10\.[^#?]+)/)[1];
+	var pdfURL = "/content/pdf/" + encodeURIComponent(DOI) + ".pdf";
+	// Z.debug("pdfURL: " + pdfURL);
+
+	if (getAction(url) == 'book') {
+		let search = Zotero.loadTranslator('search');
+		search.setSearch({ DOI });
+		search.setHandler('translators', (obj, translators) => {
+			search.setTranslator(translators);
+			search.setHandler('itemDone', (obj, item) => {
+				item = complementItem(doc, item);
+				item.attachments.push({
+					url: pdfURL,
+					title: "Full Text PDF",
+					mimeType: "application/pdf"
+				});
+				item.complete();
+			});
+			search.translate();
+		});
+		search.getTranslators();
+		return;
+	}
+
+	var risURL = "https://citation-needed.springer.com/v2/references/" + DOI + "?format=refman&flavour=citation";
+	// Z.debug("risURL" + risURL);
+	ZU.doGet(risURL, function (text) {
+		// Z.debug(text)
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(text);
+		translator.setHandler("itemDone", function (obj, item) {
+			item = complementItem(doc, item);
+
+			item.attachments.push({
+				url: pdfURL,
+				title: "Full Text PDF",
+				mimeType: "application/pdf"
+			});
+			item.complete();
+		});
+		translator.translate();
+	});
+}

@@ -1,0 +1,164 @@
+function detectWeb(doc, url) {
+	if (url.includes('/search/?q=') && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	else if (url.search(/\/article\/|\d{4}\/\d{2}\/\d{2}\/./) != -1
+		|| ZU.xpath(doc, '//section[@class="article-body"]/div[@class="issue-date"]').length
+		|| doc.getElementsByClassName('active').length
+	) {
+		return "magazineArticle";
+	}
+	// TODO: detect new content on scroll, beacause we should not detect on
+	// ads and ToC content
+	return false;
+}
+
+function handleAuthors(authors) {
+	if (authors && (authors = authors.trim())) {
+		var matches = authors.match(/^\s*([^/]+?)\s*\/\s*(.+?)\s*$/);
+		if (matches) {
+			if (matches[1] == 'AP' || matches[1] == 'Fortune') {
+				authors = matches[2];
+			}
+			else {
+				authors = matches[1];
+			}
+		}
+		
+		// x, y and z
+		authors = authors.replace(/^\s*By\s+/, "").split(/\s*,\s*|\s+and\s+/i);
+		var authArr = [];
+		for (var i = 0, n = authors.length; i < n; i++) {
+			let author = authors[i].replace(/\s*[@/].+/, "");
+			if (author.toUpperCase() == author) {
+				author = ZU.capitalizeTitle(author);
+			}
+			authArr.push(ZU.cleanAuthor(author, 'author'));
+		}
+		if (authArr.length) return authArr;
+	}
+	return [];
+}
+
+function handleKeywords(keywords) {
+	if (keywords && (keywords = keywords.trim())) {
+		return keywords.split(/,\s*/);
+	}
+	return [];
+}
+
+function scrape(doc, url) {
+	var article = ZU.xpath(doc, '//section/div[@class="wrapper"]/article[contains(@class, "active")]')[0];
+	var metaUrl = ZU.xpathText(doc, '/html/head/meta[@property="og:url"]/@content');
+	
+	if (article && metaUrl && !doc.location.href.includes(metaUrl)) {
+		// time has a feature where you scroll to the next article
+		// in this case we have to use the active article instead
+		var item = new Zotero.Item("magazineArticle");
+		item.title = ZU.trimInternal(article.getElementsByClassName('article-title')[0].textContent);
+		item.publicationTitle = "Time";
+		item.url = url;
+		item.ISSN = "0040-781X";
+		item.language = "en-US";
+		
+		var authors = article.getElementsByClassName('byline');
+		if (authors.length) {
+			item.creators = handleAuthors(authors
+				.map(function (a) {
+					return ZU.trimInternal(a.textContent);
+				})
+				.join(', ')
+			);
+		}
+
+		var keywords = ZU.xpathText(article, 'header//a[@class="topic-tag" or @class="section-tag"]');
+		if (keywords) item.tags = handleKeywords(keywords);
+
+		item.abstractNote = ZU.xpathText(doc, '//h2[@class="article-excerpt"]');
+		item.date = ZU.xpathText(article, 'header//time[@class="publish-date"]/@datetime');
+		
+		item.complete();
+	}
+	else {
+		var translator = Zotero.loadTranslator('web');
+		translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+		translator.setDocument(doc);
+		
+		translator.setHandler('itemDone', function (obj, item) {
+			item.itemType = "magazineArticle";
+			item.publicationTitle = "Time";
+			item.url = url;
+			item.ISSN = "0040-781X";
+			item.language = "en-US";
+			
+			var authors = ZU.xpathText(doc, '//meta[@name="byline"]/@content')
+				|| ZU.xpathText(doc, '//span[@class="author vcard"]/a', null, ' and ')
+				|| ZU.xpathText(doc, '//span[@class="entry-byline"]')
+				|| ZU.xpathText(doc, '//header[@class="article-header"]//ul[@class="article-authors"]//span[@class="byline"]/a')
+				|| ZU.xpathText(doc, '//div[contains(@class, "author-text")]/a');
+			if (authors) item.creators = handleAuthors(authors);
+
+			var title = ZU.xpathText(doc, '//h1[@class="entry-title"]');
+			if (!item.title && title) item.title = title;
+			
+			var keywords = ZU.xpathText(doc, '/html/head/meta[@name="keywords"]/@content')
+				|| ZU.xpathText(doc, 'header//a[@class="topic-tag" or @class="section-tag"]');
+			if (item.tags.length == 0 && keywords) item.tags = handleKeywords(keywords);
+			
+			if (!item.abstractNote) item.abstractNote = ZU.xpathText(doc, '//h2[@class="article-excerpt"]');
+			if (!item.date) {
+				item.date = ZU.xpathText(doc, '//time[@class="publish-date"]/@datetime')
+					|| ZU.xpathText(doc, '//div[contains(@class, "published-date")]')
+					|| ZU.xpathText(doc, '//span[contains(@class, "entry-date")]');
+			}
+			if (item.date) {
+				item.date = ZU.strToISO(item.date);
+			}
+			
+			item.complete();
+		});
+		
+		translator.getTranslatorObject(function (em) {
+			em.addCustomFields({
+				date: 'date'
+			});
+		});
+
+		translator.translate();
+	}
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('article .headline>a');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}

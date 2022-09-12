@@ -1,0 +1,54 @@
+function detectWeb(doc, url) {
+	if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	else if (doc.querySelector('h1.hero-title')) {
+		return "encyclopediaArticle";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('#index-content-section a[href*="/countries/"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item('encyclopediaArticle');
+	
+	item.title = text(doc, 'h1.hero-title');
+	item.encyclopediaTitle = 'The World Factbook';
+	item.publisher = 'Central Intelligence Agency';
+	item.date = ZU.strToISO(text(doc, '.header-subsection-date'));
+	item.url = url;
+	item.language = 'en';
+	item.libraryCatalog = 'CIA.gov';
+	
+	item.attachments.push({
+		title: 'Snapshot',
+		document: doc
+	});
+	
+	item.complete();
+}

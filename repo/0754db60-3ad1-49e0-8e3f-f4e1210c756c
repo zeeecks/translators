@@ -1,0 +1,84 @@
+function detectWeb(doc, url) {
+	if (/\/print\/.*-\d{5}/.test(url)) {
+		return "magazineArticle";
+	} else if (getSearchResults(doc, true, url)) {
+		return "multiple";
+	}
+}
+
+
+function scrape(doc, url) {
+	var item = new Zotero.Item("magazineArticle");
+	item.libraryCatalog = "UNZ";
+	item.title = text('.block .head');
+	var authorMetadata = doc.querySelectorAll('#pub-heading .byline a');
+	for (let author of authorMetadata) {
+		item.creators.push(ZU.cleanAuthor(author.textContent, "author"));
+	}
+	var subhead = text('#pub-heading .subhead');
+	if (subhead) {
+		var reviewedAuthor = subhead.replace(/.*\sby\s(.*)/,'$1');
+		item.creators.push(Zotero.Utilities.cleanAuthor(reviewedAuthor, "reviewedAuthor"));
+	}
+	var sourceline = text('#pub-heading .sourceline');
+	if (sourceline) {
+		item.publicationTitle = doc.querySelector('.sourceline i').textContent;
+		item.date = ZU.strToISO(doc.querySelector('.sourceline a').textContent);
+		item.pages = sourceline.replace(/.*p+\.\s(\d+(-\d+)?).*/,'$1'); // http://regexr.com/3du86	
+	}
+	item.language = "en";
+	item.url = url.replace(/[?#].*/, '');
+	var pdfURL = doc.querySelector('iframe#insert-pdf');
+	if (pdfURL) {
+		pdfURL = pdfURL.getAttribute('src');
+		item.attachments.push({	// no need for snapshots, but download PDF if available
+			url: pdfURL,
+			title: item.title,
+			mimeType:"application/pdf"
+		});
+	}
+
+	item.complete();
+}
+
+
+function getSearchResults(doc, checkOnly, url) {
+	var items = {};
+	var found = false;
+	var rows;
+	if (url.includes('/Contents/')) {
+		rows = doc.querySelectorAll('.show .pub-text a.head');
+	} else {
+		rows = doc.querySelectorAll('.pub-text a.head');
+	}
+	for (let i=0; i<rows.length; i++) {
+		let href = rows[i].href;
+		let title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	switch (detectWeb(doc, url)) {
+		case "multiple":
+			Zotero.selectItems(getSearchResults(doc, false, url), function (items) {
+				if (!items) {
+					return true;
+				}
+				var articles = [];
+				for (var i in items) {
+					articles.push(i);
+				}
+				ZU.processDocuments(articles, scrape);
+			});
+			break;
+		case "magazineArticle":
+			scrape(doc, url);
+			break;
+	}
+}

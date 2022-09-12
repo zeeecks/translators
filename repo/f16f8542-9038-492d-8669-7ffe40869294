@@ -1,0 +1,35 @@
+function detectWeb(doc, _url) {
+	if (doc.querySelector('h1.title') && doc.querySelector('.primary')) {
+		return "magazineArticle";
+	}
+	// search just redirects to DuckDuckGo
+	return false;
+}
+
+function doWeb(doc, url) {
+	scrape(doc, url);
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item('magazineArticle');
+	
+	item.title = text(doc, 'h1.title');
+	item.abstractNote = ZU.cleanTags(attr(doc, 'meta[name="description"]', 'content'));
+	item.publicationTitle = 'Current Affairs';
+	item.issue = attr(doc, '#wpIssueName', 'value');
+	item.date = ZU.strToISO(text(doc, '.dateline span'));
+	item.language = 'en';
+	item.ISSN = '2471-2647';
+	item.url = url.replace(/[#?].*$/, '');
+	
+	for (let byline of doc.querySelectorAll('.primary .bylines li')) {
+		item.creators.push(ZU.cleanAuthor(byline.innerText, 'author'));
+	}
+	
+	item.attachments.push({
+		title: 'Snapshot',
+		document: doc
+	});
+	
+	item.complete();
+}

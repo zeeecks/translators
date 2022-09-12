@@ -1,0 +1,273 @@
+function detectWeb(doc, url) {
+	if (url.includes('#/asset/')) {
+		if (text(doc, '[data-qa-id="worktype"]').includes('Map')) {
+			return "map";
+		}
+		else if (doc.querySelector('.video-player')) {
+			return "videoRecording";
+		}
+		else {
+			return "artwork";
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	Z.monitorDOMChanges(doc.querySelector('app-root'));
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.card');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(text(row, '.asset-title'));
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) {
+				Object.keys(items).forEach((url) => {
+					ZU.doGet(buildMetadataURL(url),
+						function (respText) {
+							scrape(doc, url, JSON.parse(respText));
+						});
+				});
+			}
+		});
+	}
+	else {
+		ZU.doGet(buildMetadataURL(url), function (respText) {
+			scrape(doc, url, JSON.parse(respText));
+		});
+	}
+}
+
+function buildMetadataURL(pageURL) {
+	let idMatches = pageURL.match(/\/asset\/([^/;]+)(;|$)/);
+	if (idMatches) {
+		let id = idMatches[1];
+		return `https://library.artstor.org/api/v1/metadata?object_ids=${id}&legacy=false`;
+	}
+	
+	// "encrypted" IDs (external collections)
+	idMatches = pageURL.match(/\/asset\/[^/]+\/[^/]+\/([^?/;]+)/);
+	if (!idMatches) {
+		throw new Error('Could not extract ID from ARTstor URL: ' + pageURL);
+	}
+	
+	let id = idMatches[1];
+	return `https://library.artstor.org/api/v2/items/resolve?encrypted_id=${id}&ref=&legacy=false&openlib=true`;
+}
+
+function scrape(doc, url, json) {
+	if (!json.success || !json.metadata.length) {
+		throw new Error('ARTstor metadata retrieval failed');
+	}
+	
+	let meta = json.metadata[0];
+	let item = new Zotero.Item(resolveTypeID(meta.object_type_id));
+	
+	item.DOI = ZU.cleanDOI(meta.doi);
+	// URL will be overwritten if the accession number has a source link
+	if (url.includes(';')) {
+		url = url.substring(0, url.indexOf(';'));
+	}
+	item.url = url;
+	
+	for (let { fieldName, fieldValue } of meta.metadata_json) {
+		switch (fieldName) {
+			case 'Work Type':
+				if (fieldValue.includes('Map')) {
+					item.itemType = 'map';
+				}
+				item.tags.push({ fieldValue });
+				break;
+			case 'Creator': {
+				let type = 'artist';
+				if (item.itemType == 'map') {
+					type = 'cartographer';
+				}
+				else if (item.itemType == 'videoRecording') {
+					type = 'contributor'; // sometimes cast member, sometimes director
+				}
+				
+				fieldValue = fieldValue
+					.replace(/^[^:]+:/, '')
+					.replace(/\(.*\)/, '')
+					.replace(/\d+-(\d+)?/, '');
+				
+				item.creators.push(ZU.cleanAuthor(fieldValue, type, true));
+				break;
+			}
+			case 'Title':
+				if (!item.title) {
+					// titles after the first are usually annotated or otherwise
+					// difficult to deal with
+					item.title = fieldValue;
+				}
+				else {
+					item.extra = append(item.extra, `Alternate Title: ${fieldValue}`);
+				}
+				break;
+			case 'Date':
+				item.date = ZU.strToISO(fieldValue);
+				break;
+			case 'Measurements':
+				item.artworkSize = fieldValue;
+				break;
+			case 'Description':
+			case 'Collector\'s Notes':
+				item.abstractNote = append(item.abstractNote, fieldValue);
+				break;
+			case 'Repository':
+				item.archive = ZU.cleanTags(fieldValue);
+				break;
+			case 'Accession Number':
+			case 'Physical Location of Original': {
+				item.archiveLocation = ZU.cleanTags(fieldValue);
+				let linkMatches = fieldValue.match(/<a href=["']?([^>]+)["']?>/i);
+				if (linkMatches) {
+					item.url = linkMatches[1];
+				}
+				break;
+			}
+			case 'Subject':
+				item.tags.push(...fieldValue.split(';').map(tag => ({ tag })));
+				break;
+			case '_Archival Location':
+				if (!item.archiveLocation) {
+					// these are not often as useful as accession numbers
+					item.archiveLocation = fieldValue;
+				}
+				break;
+			case 'Rights':
+			case 'License':
+				item.rights = append(item.rights, ZU.cleanTags(fieldValue));
+				break;
+			case 'Location':
+				item.extra = append(item.extra, `Depicted Location: ${fieldValue}`);
+				break;
+			case 'Source':
+				if (fieldValue.startsWith('Photographer:')) {
+					item.creators.push(
+						ZU.cleanAuthor(
+							fieldValue.substring('Photographer:'.length),
+							'artist'
+						)
+					);
+				}
+				break;
+			case 'Notes':
+				item.notes.push({ note: fieldValue });
+				break;
+			case 'Scale':
+				if (item.itemType == 'map') {
+					item.scale = fieldValue;
+				}
+				break;
+			case 'Type':
+				if (item.itemType == 'map') {
+					item.mapType = fieldValue;
+				}
+				break;
+			case 'Extent':
+				if (item.itemType == 'videoRecording') {
+					item.runningTime = fieldValue;
+				}
+				break;
+			default:
+				Z.debug(`Unknown field: ${fieldName} = ${fieldValue}`);
+		}
+	}
+	
+	if (!item.title) {
+		item.title = 'Untitled';
+	}
+	
+	// PDF attachments not handled yet
+	
+	if (json.imageUrl) {
+		// ideal situation: the JSON has a direct image URL in it
+		item.attachments.push({
+			title: 'Artwork Image',
+			mimeType: 'image/jpeg',
+			url: (json.imageServer || 'https://stor.artstor.org/') + json.imageUrl
+		});
+	}
+	else if (meta.image_url) {
+		// almost ideal: we get a URL with some extraneous info that we need to
+		// clean, but after we do that, we can fetch the image directly
+		let basePart = 'https://stor.artstor.org/iiif/fpx/';
+		let idPart = meta.image_url.replace(/\.fpx.*/, '.fpx');
+		let imagePart = `/full/${meta.width},/0/default.jpg`;
+		
+		item.attachments.push({
+			title: 'Artwork Image',
+			mimeType: 'image/jpeg',
+			url: basePart + idPart + imagePart
+		});
+	}
+	else if (meta.image_compound_urls && meta.image_compound_urls.length) {
+		// not really very ideal: we need to make a second GET request for the
+		// "compound image" metadata
+		let imageURLs = meta.image_compound_urls
+			.map(imgURL => 'https://stor.artstor.org/iiif/' + imgURL);
+		ZU.doGet(imageURLs, function (respText) {
+			let { '@id': imageURL, width } = JSON.parse(respText);
+			item.attachments.push({
+				title: 'Artwork Image',
+				mimeType: 'image/jpeg',
+				url: `${imageURL}/full/${width},/0/default.jpg`
+			});
+		}, function () {
+			// when all requests have completed
+			item.complete();
+		});
+		return;
+	}
+	else if (doc) {
+		// bad: this last resort will fail if the user hasn't clicked the
+		// download link already (which they probably haven't). but at least
+		// it'll alert them that the translator *tried* to download the image,
+		// so they can do it themselves if they need to.
+		item.attachments.push({
+			title: 'Artwork Image',
+			mimeType: 'image/jpeg',
+			url: attr(doc, '#downloadAssetLink', 'href')
+		});
+	}
+	
+	item.complete();
+}
+
+function resolveTypeID(typeID) {
+	switch (typeID) {
+		case 24:
+			return 'videoRecording';
+		default:
+			Z.debug('Unknown type ID (probably artwork): ' + typeID);
+			return 'artwork';
+	}
+}
+
+function append(existingText, newText) {
+	if (!existingText) {
+		return newText;
+	}
+	
+	if (!newText) {
+		return existingText;
+	}
+	
+	return existingText + '\n' + newText;
+}

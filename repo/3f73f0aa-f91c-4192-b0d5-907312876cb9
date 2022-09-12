@@ -1,0 +1,133 @@
+function detectWeb(doc, url) {
+	// Match against a results page or a Ph. D/supervisor/organization page which might contains multiple records e.g.
+	// http://www.theses.fr/fr/?q=zotero
+	// http://www.theses.fr/fr/154750417
+	if (url.includes('/?q=') || url.match(/\d{8}(\d|X)/)) {
+		return 'multiple';
+	}
+	else {
+		return 'thesis';
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	let items = {};
+	let found = false;
+	let rows = ZU.xpath(doc, '//div[contains(@class, "encart arrondi-10")]//h2/a');
+
+	rows.forEach((row) => {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+		return row;
+	});
+
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) === 'multiple') {
+		Zotero.selectItems(getSearchResults(doc, false), (items) => {
+			if (!items) return;
+
+			let records = [];
+			let item = null;
+
+			for (item in items) {
+				records.push(item);
+			}
+			
+			ZU.processDocuments(records, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let xmlDocumentUrl = `${url}.rdf`;
+	
+	// Each thesis record has an underlying .rdf file
+	Zotero.Utilities.HTTP.doGet(xmlDocumentUrl, function (text) {
+		let parser = new DOMParser();
+		let xmlDoc = parser.parseFromString(text, 'application/xml');
+
+		// Skiping invalid or empty RDF files : prevents crashes while importing multiple records
+		if (xmlDoc.getElementsByTagName('parsererror')[0] || xmlDoc.children[0].childElementCount === 0) {
+			throw new Error("Invalid or empty RDF file");
+		}
+		
+		// Importing XML namespaces for parsing purposes
+		let ns = {
+			bibo: 'http://purorg/ontology/bibo/',
+			dc: 'http://purl.org/dc/elements/1.1/',
+			dcterms: 'http://purl.org/dc/terms/',
+			foaf: 'http://xmlns.com/foaf/0.1/',
+			marcrel: 'http://www.loc.gov/loc.terms/relators/',
+			rdf: 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
+		};
+	
+		let title = ZU.xpathText(xmlDoc, '//dc:title', ns);
+		
+		if (!title) throw new Error("Reccord must contains a title to be imported");
+
+		let newItem = new Zotero.Item();
+		newItem.itemType = 'thesis';
+		newItem.title = title;
+
+		ZU.xpath(xmlDoc, '//marcrel:aut//foaf:Person/foaf:name | //marcrel:dis//foaf:Person/foaf:name', ns).forEach((auth) => {
+			let author = ZU.cleanAuthor(auth.textContent, 'author', true);
+			newItem.creators.push(author);
+		});
+
+		// Supervisor(s) must be considered as contributor(s) for french thesis
+		ZU.xpath(xmlDoc, '//marcrel:ths//foaf:Person/foaf:name', ns).forEach((sup) => {
+			let supervisor = ZU.cleanAuthor(sup.textContent, 'contributor', true);
+			newItem.creators.push(supervisor);
+		});
+
+		newItem.abstractNote = ZU.xpathText(xmlDoc, '(//dcterms:abstract)[1]', ns);
+
+		// '/s + digit' in url means thesis in preparation
+		newItem.thesisType = url.match(/\/s\d+/) ? 'These en préparation' : 'These de doctorat';
+
+		newItem.university = ZU.xpathText(xmlDoc, '(//marcrel:dgg/foaf:Organization/foaf:name)[1]', ns);
+
+		let fullDate = ZU.xpathText(xmlDoc, '//dcterms:dateAccepted', ns);
+		let year = ZU.xpathText(xmlDoc, '//dc:date', ns);
+
+		// Some old records doesn't have a full date instead we can use the defense year
+		newItem.date = fullDate ? fullDate : year;
+		newItem.url = url;
+		newItem.libraryCatalog = 'theses.fr';
+		newItem.rights = 'Licence Etalab';
+
+		// Keep extra information such as laboratory, graduate schools, etc. in a note for thesis not yet defended
+		let notePrepa = Array.from(doc.getElementsByClassName('donnees-ombreprepa2')).map((description) => {
+			return Array.from(description.getElementsByTagName('p')).map(description => description.textContent.replace(/\n/g, ' ').trim());
+		}).join(' ');
+
+		if (notePrepa) {
+			newItem.notes.push({ note: notePrepa });
+		}
+
+		// Keep extra information such as laboratory, graduate schools, etc. in a note for defended thesis
+		let note = Array.from(doc.getElementsByClassName('donnees-ombre')).map((description) => {
+			return Array.from(description.getElementsByTagName('p')).map(description => description.textContent.replace(/\n/g, ' ').trim());
+		}).join(' ');
+
+		if (note) {
+			newItem.notes.push({ note: note });
+		}
+
+		ZU.xpath(xmlDoc, '//dc:subject', ns).forEach((t) => {
+			let tag = t.textContent;
+			newItem.tags.push(tag);
+		});
+
+		newItem.complete();
+	});
+}

@@ -1,0 +1,72 @@
+function getSearchResults(doc) {
+	const results = doc.querySelectorAll("a[href$=abstract]");
+	const entries = {};
+	for (let el of results) {
+		const titleEl = el.querySelector(":scope h3");
+		if (!titleEl) {
+			continue;
+		}
+		const hrefParts = el.getAttribute("href").split("/");
+		if (hrefParts.length > 2) {
+			const identifier = hrefParts[hrefParts.length - 2];
+			entries[identifier] = ZU.trimInternal(titleEl.textContent);
+		}
+	}
+	return entries;
+}
+
+function extractId(url) {
+	return /\/abs\/([^/]+)/.exec(url)[1];
+}
+
+function getTypeFromId(id) {
+	// bibcodes always start with 4 digit year, then bibstem
+	const bibstem = id.slice(4);
+	if (bibstem.startsWith("MsT") || bibstem.startsWith("PhDT")) {
+		return "thesis";
+	}
+	else if (bibstem.startsWith("arXiv")) {
+		return "report"; // preprint
+	}
+	else {
+		// now scan past the bibstem and find the volume number/type abbrev.
+		const volume = bibstem.substring(5, 9);
+		if (volume == "conf" || volume == "meet" || volume == "coll"
+			|| volume == "proc" || volume == "book") {
+			return "book";
+		}
+		else if (volume == "rept") {
+			return "report";
+		}
+	}
+	return "journalArticle";
+}
+
+function detectWeb(doc, url) {
+	if (url.includes("/search/")) {
+		return "multiple";
+	}
+	else if (url.includes("/abs/")) {
+		return getTypeFromId(extractId(url));
+	}
+	return false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) === "multiple") {
+		Zotero.selectItems(getSearchResults(doc), function (items) {
+			if (!items) return true;
+			return scrape(Object.keys(items));
+		});
+	}
+	else {
+		scrape([extractId(url)]);
+	}
+}
+
+function scrape(ids) {
+	let trans = Zotero.loadTranslator('search');
+	trans.setTranslator('09bd8037-a9bb-4f9a-b3b9-d18b2564b49e');
+	trans.setSearch(ids.map(id => ({ adsBibcode: id })));
+	trans.translate();
+}

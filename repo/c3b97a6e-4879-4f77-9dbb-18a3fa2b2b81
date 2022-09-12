@@ -1,0 +1,80 @@
+// attr()/text() v2
+function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null;}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null;}
+
+
+function detectWeb(doc, url) {
+	if (url.search(/\d+_\d+\.html/) !== -1) {
+		return "newspaperArticle";
+	} else if ((url.includes("/buscador") || url.includes("/tag/")) && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('h2>a[href*=".html"]');
+	for (let i=0; i<rows.length; i++) {
+		let href = rows[i].href;
+		let title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	// translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		//improve author parsing
+		item.creators = [];
+		var authors = attr(doc, 'meta[name=author]', 'content');
+		authors = authors.split(/\s*,\s/);
+		//Z.debug(authors)
+		for (let author of authors) {
+			if (author !== "Agencias") {
+				item.creators.push(ZU.cleanAuthor(author, "author"));
+			}
+		}
+		item.publicationTitle = "El País";
+		item.ISSN = "1134-6582";
+		item.place = "Madrid";
+		if (item.section) {
+			item.section = ZU.capitalizeTitle(item.section.replace(/_/, " "), true);
+		}
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function(trans) {
+		trans.itemType = "newspaperArticle";
+		trans.addCustomFields({
+			"article:section" : "section"
+		});
+		trans.doWeb(doc, url);
+	});
+}

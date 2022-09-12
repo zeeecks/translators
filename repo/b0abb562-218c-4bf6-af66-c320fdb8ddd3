@@ -1,0 +1,82 @@
+function detectWeb(doc, url) {
+	if (url.indexOf('/p/phimp?t')>-1 && getSearchResults(doc, true)) {
+		return "multiple";
+	} else if (url.indexOf('/p/phimp/')>-1) {
+		return "journalArticle";
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	//TODO: adjust the xpath
+	var rows = ZU.xpath(doc, '//table[@id="searchresults"]//td[2]/a');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			
+			
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	// move meta tags to head for EM
+	// this is a fix for some malformed HTML
+	for (let meta of doc.body.querySelectorAll('meta')) {
+		doc.head.appendChild(meta);
+	}
+	
+	var abstract = ZU.xpathText(doc, '//div[contains(@class, "abstract")]/p[1]');
+	var purl = ZU.xpathText(doc, '//div[@id="purl"]/a/@href');
+	var license = ZU.xpathText(doc, '//a[@id="licenseicon"]/@href');
+	var pdfurl = ZU.xpathText(doc, '//li[@id="download-pdf"]/a/@href');
+	
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	translator.setHandler('itemDone', function (obj, item) {
+		if (abstract) {
+			item.abstractNote = abstract;
+		}
+		if (purl) {
+			item.url = purl;
+		}
+		if (pdfurl) {
+			item.attachments.push({
+				url: pdfurl,
+				title: "Full Text PDF",
+				mimeType: "application/pdf"
+			});
+		}
+		item.rights = license;
+		item.place = "Ann Arbor, MI";
+		item.publisher = "University of Michigan";
+		
+		item.complete();
+	});
+	translator.translate();
+}

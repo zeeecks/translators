@@ -1,0 +1,39 @@
+function detectWeb(doc, url) {
+	if (ZU.xpathText(doc, '//script[contains(., "SK_config[\'title\']")]')) {
+		return "presentation";
+	}
+}
+
+
+function doWeb(doc, url) {
+	var textContent = ZU.xpathText(doc, '//body');
+	var item = new Zotero.Item('presentation');
+
+	var titleMatch = textContent.match(/SK_config\['title'\]\s?=\s?'([^;]*)';/);
+	item.title = titleMatch[1];
+
+	//SK_config['lastModified'] = ["Lydia Pintscher", 1495520656216, 2];
+	var modifiedMatch = textContent.match(/SK_config\['lastModified'\]\s?=\s?([^;]*);/);
+	if (modifiedMatch && modifiedMatch[1] != 'null') {
+		var modifiedData = JSON.parse(modifiedMatch[1]);
+		item.creators.push(ZU.cleanAuthor(modifiedData[0], "author"));
+		var date = new Date(modifiedData[1]);
+			item.date = date.toISOString();
+	}
+	
+	var urlparts = url.split('/');
+	var id = urlparts[5];
+	urlparts.splice(6);
+	var baseUrl = urlparts.join('/');
+	item.url = baseUrl;
+	var pdfUrl = baseUrl + '/export/pdf?id=' + id;
+	//Z.debug(pdfUrl);
+	item.attachments.push({
+		url: pdfUrl,
+		title: "Full Text PDF",
+		mimeType: "application/pdf"
+	});
+	
+	item.complete();
+	
+}

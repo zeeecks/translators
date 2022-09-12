@@ -1,0 +1,65 @@
+function detectWeb(doc, url) {
+	if (url.includes('/art-object-page')) {
+		return "artwork";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.return-art .title a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, _url) {
+	var newItem = new Zotero.Item("artwork");
+	var authors = doc.querySelectorAll('.object-artist > a');
+	for (let author of authors) {
+		let name = author.textContent;
+		if (name) {
+			newItem.creators.push(ZU.cleanAuthor(name, "artist", name.includes(', ')));
+		}
+	}
+	newItem.title = text(doc, 'h1.object-title > em');
+	newItem.date = text(doc, 'h1.object-title > .date');
+	newItem.artworkMedium = getValue(doc, 'medium');
+	newItem.artworkSize = getValue(doc, 'dimensions');
+	newItem.callNumber = getValue(doc, 'accession');
+	newItem.attachments.push({
+		document: doc,
+		title: "Snapshot"
+	});
+	newItem.libraryCatalog = 'National Gallery of Art';
+	
+	newItem.complete();
+}
+
+function getValue(doc, objectAttrClass) {
+	return [...doc.querySelectorAll(`.object-attr.${objectAttrClass} > .object-attr-value`)]
+		.map(el => el.textContent)
+		.filter(Boolean)
+		.join(', ');
+}

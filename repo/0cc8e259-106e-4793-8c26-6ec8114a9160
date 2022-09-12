@@ -1,0 +1,65 @@
+function scrape(doc, url) {
+	var item = new Zotero.Item("presentation");
+	item.title = ZU.xpathText(doc, '(//meta[@name="title" or @property="og:title"]/@content)[1]') ||
+				ZU.xpathText(doc, '/html/head/title');
+
+	var creator = ZU.xpathText(doc, '//div[@itemprop="author"]//span[@itemprop="name"]');
+	if (creator && creator.trim())
+		item.creators.push({lastName:creator.trim(), creatorType:'author'});
+
+	item.abstractNote = ZU.xpathText(doc, '//p[@id="slideshow-description-paragraph"]');
+
+	var tags = ZU.xpathText(doc, '//meta[contains(@name, "slideshow_tag")]/@content');
+	if (tags) tags = tags.split(/\s*,\s*/);
+	for (var i in tags) {
+		item.tags.push(tags[i].trim());
+	}
+
+	var rights = ZU.xpathText(doc, '//div[contains(@class, "license-container")]');
+	if (rights && rights.trim()) item.rights = rights.trim()
+
+	item.type = ZU.xpathText(doc, '//div[contains(@class, "categories-container")]//a[1]');
+
+	var date = ZU.xpathText(doc, '//meta[@property = "slideshare:created_at"]/@content');
+	if (date) item.date = date;
+	item.url = url;
+	item.libraryCatalog = "SlideShare";
+
+	var loggedin = !doc.getElementById('login_link');
+	var pdfurl = ZU.xpathText(doc, '//li[@class="action-download"]/a/@href');
+	if (loggedin && pdfurl) {
+		//is this always pdf?
+		item.attachments.push({url:pdfurl, title:"SlideShare Slide Show", mimeType:"application/pdf"});
+	}
+
+	item.complete();	
+}
+
+function detectWeb(doc, url) {
+	if (url.indexOf("/search/") != -1 &&
+		ZU.xpath(doc, '//div[contains(@class, "searchResults")]\
+					//div[./a[contains(@class, "slideshow-title")]]').length) {
+		return "multiple";
+	} else if ((ZU.xpathText(doc, '//meta[@name="og_type"]/@content') && ZU.xpathText(doc, '//meta[@name="og_type"]/@content') == 'article') || (ZU.xpathText(doc, '//meta[@name="og_type"]/@content') && ZU.xpathText(doc, '//meta[@name="og_type"]/@content').search(/presentation/)!=-1)) {
+		return "presentation";
+	}
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		var links = ZU.xpath(doc,'//div[contains(@class, "searchResults")]\
+					//div[./a[contains(@class, "title-link")]]');
+		Zotero.selectItems( ZU.getItemArray(doc, links, 'from_search=', null),
+			function(items) {
+				if (!items) return true;
+	
+				var shows = new Array();
+				for (var i in items) {
+					shows.push(i);
+				}
+				ZU.processDocuments(shows, scrape)
+			});
+	} else {
+		scrape(doc, url);
+	}
+}

@@ -1,0 +1,77 @@
+function detectWeb(doc, url) {
+	if (url.match(/uniqueId=(\d+)/)) {
+		return "artwork";
+	}
+	return false;
+}
+
+function parseArtwork(uniqueId) {
+	let jsonURL = `https://searchthecollection.nga.gov.au/stcapi/service/stc/node?uniqueId=${uniqueId}`;
+
+	ZU.doGet(jsonURL, function (respText) {
+		let newArtwork = new Zotero.Item("artwork");
+		let json = JSON.parse(respText);
+
+		if (parseInt(json.responseCode) != 200) {
+			throw new Error(`NGA Collection API request failed: ${json.responseMessage}`);
+		}
+
+		let data = json.payLoad;
+
+		// start populating the Zotero artwork item
+		newArtwork.callNumber = uniqueId;
+		newArtwork.url = `https://searchthecollection.nga.gov.au/object?uniqueId=${uniqueId}`;
+
+		// pull data from the relevant fields of the json response
+		newArtwork.title = data.vraTitleDisplayText;
+		newArtwork.libraryCatalog = `National Gallery of Australia - ${data.ngadCollectionStatus}`;
+		newArtwork.date = data.vraDateDisplayText;
+		newArtwork.artworkMedium = data.vraMaterialDisplayText;
+
+		let creators = JSON.parse(data.creatorsJson);
+		let irns = []; // for deduplication
+
+		for (let creator of creators) {
+			// the API sometimes returns duplicate creators, so here we check
+			// if we've seen this one before
+			if (irns.includes(creator.irn)) continue;
+
+			// if not, on with the show!
+			let name = creator.NamFullName;
+			let type = creator.NamPartyType;
+			if (type == "Person") {
+				// if we get a person, we should treat their name like
+				// a personal name and attempt to parse it
+				newArtwork.creators.push(ZU.cleanAuthor(name, "artist"));
+			}
+			else {
+				// if we get an organization, we should pass its name
+				// through as-is
+				newArtwork.creators.push({
+					lastName: name,
+					creatorType: "contributor",
+					fieldMode: 1
+				});
+			}
+			irns.push(creator.irn);
+		}
+
+		newArtwork.tags = data.aatTerTerm;
+
+		// provenance info (if present) is a useful thing to store in the notes field
+		if (data.provenance) {
+			newArtwork.notes.push(data.provenance);
+		}
+
+		newArtwork.complete();
+	});
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url)) {
+		// if `detectWeb' returns true then this will definitely match,
+		// since it's the same regex
+		let uniqueId = url.match(/uniqueId=(\d+)/)[1];
+		parseArtwork(uniqueId);
+	}
+}

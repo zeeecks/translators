@@ -1,0 +1,97 @@
+function detectWeb(doc, url) {
+	if (/\/menu(s|_pages)\/\d+/.test(url)) {
+		return "document";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.item .menu');
+	for (let row of rows) {
+		let href = attr(row, 'a[href*="/menus/"]', 'href');
+		let title = ZU.trimInternal(text(row, 'a:not(.thumbportrait)') + ' '
+			+ (text(row, 'div').match(/([0-9]{4})/) || [''])[0]);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else if (url.includes('/menu_pages/')) {
+		ZU.processDocuments(attr(doc, '#carousel li:first-child a', 'href'), scrape);
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, _url) {
+	let item = new Zotero.Item('document');
+	item.title = text(doc, 'div.modes') + ' menu';
+	item.libraryCatalog = 'New York Public Library Menu Collection';
+	item.numPages = '' + doc.querySelector('.pages').childElementCount;
+	item.url = attr(doc, '.pages a', 'href').replace(/\/explore$/, '');
+	if (item.url.startsWith('/')) {
+		// only one case (/menu_pages/12345) to deal with here.
+		// no HTTPS.
+		item.url = 'http://menus.nypl.org' + item.url;
+	}
+	item.extra = 'genre: Restaurant menu\n';
+	
+	for (let p of doc.querySelectorAll('.metadata p')) {
+		let text = ZU.trimInternal(p.innerText);
+		if (text.startsWith('Location')) {
+			text = text.substring('Location'.length).trim();
+			item.extra += `Restaurant Location: ${text}\n`;
+		}
+		else if (text.startsWith('Date')) {
+			text = text.substring('Date'.length);
+			item.date = ZU.strToISO(text);
+		}
+		else if (text.startsWith('Place')) {
+			text = text.substring('Place'.length).trim();
+			item.extra += `Place: ${text}\n`;
+		}
+		else if (text.startsWith('Physical description')) {
+			text = text.substring('Physical description'.length).trim();
+			item.extra += `Physical Description: ${text}\n`;
+		}
+		else if (text.startsWith('Call number')) {
+			text = text.substring('Call number'.length);
+			item.callNumber = text;
+		}
+		else if (text.startsWith('Notes')) {
+			text = text.substring('Notes'.length);
+			item.abstractNote = text;
+		}
+	}
+	
+	let note = '<h1>Dishes</h1><ul>';
+	for (let row of doc.querySelectorAll('.dishtable > tbody > tr')) {
+		let name = text(row, '.name');
+		let price = text(row, '.price');
+		if (price == '-') {
+			note += `<li>${name}</li>`;
+		}
+		else {
+			note += `<li>${name} (price: ${price})</li>`;
+		}
+	}
+	note += '</ul>';
+	item.notes.push({ note });
+	
+	item.complete();
+}

@@ -1,0 +1,118 @@
+/**
+	Copyright (c) 2013 Sebastian Karcher
+
+	This program is free software: you can redistribute it and/or
+	modify it under the terms of the GNU Affero General Public License
+	as published by the Free Software Foundation, either version 3 of
+	the License, or (at your option) any later version.
+
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+	Affero General Public License for more details.
+
+	You should have received a copy of the GNU Affero General Public
+	License along with this program.  If not, see
+	<http://www.gnu.org/licenses/>.
+*/
+
+
+
+
+function detectWeb(doc, url) {
+	if (url.indexOf("full.php?") != -1) return "thesis";
+	if (url.indexOf("results.php?") != -1) return "multiple";
+	
+}
+
+
+function scrape(doc, url) {
+	var newItem = new Zotero.Item("thesis");
+	var title = ZU.xpathText(doc, '//tr[contains(@class, "result")]/th[@class="field-name" and contains(text(), "Title")]/following-sibling::td');
+	var thesisType = ZU.xpathText(doc, '//tr[contains(@class, "result")]/th[@class="field-name" and contains(text(), "Type")]/following-sibling::td');
+	var date = ZU.xpathText(doc, '//tr[contains(@class, "result")]/th[@class="field-name" and contains(text(), "Date")]/following-sibling::td');
+	var language = ZU.xpathText(doc, '//tr[contains(@class, "result")]/th[@class="field-name" and contains(text(), "Language")]/following-sibling::td');
+	var abstract = ZU.xpathText(doc, '//tr[contains(@class, "result")]/th[@class="field-name" and contains(text(), "Abstract")]/following-sibling::td');
+	var publisherinfo = ZU.xpathText(doc, '//tr[contains(@class, "result")]/th[@class="field-name" and contains(text(), "Publisher")]/following-sibling::td');
+	var fulltext = ZU.xpathText(doc, '//tr[th[@class="field-name" and contains(text(), "Identifier")]][1]/th[@class="field-name" and contains(text(), "Identifier")]/following-sibling::td');
+
+	//Publisher field may have place
+	var place;
+	if (publisherinfo && publisherinfo.indexOf(":") !=-1){
+		var publisher = publisherinfo.match(/:\s*(.+)/)[1]
+		var place =publisherinfo.match(/(.+):/)[1]
+	}
+	else var publisher = publisherinfo;
+
+	//Authors and Tags can have multiple rows. In that case the td[1] remains empty we loop through them until that's no longer the case
+
+	var author = ZU.xpathText(doc, '//tr[contains(@class, "result")]/th[@class="field-name" and contains(text(), "Author")]/following-sibling::td');
+	if (author) newItem.creators.push(ZU.cleanAuthor(author, "author", true))
+
+
+	var tags = ZU.xpathText(doc, '//tr[contains(@class, "result")]/th[@class="field-name" and contains(text(), "Subject(s)")]/following-sibling::td');
+	if (tags) {
+	tags = tags.split(/\s*,\s*/);
+		for (var i in tags) {
+			newItem.tags.push(tags[i])
+		}
+	}
+
+	if (fulltext) {
+		fulltext = fulltext.trim();
+		if (fulltext.search(/\.pdf/) != -1) {
+			newItem.attachments.push({
+				url: fulltext,
+				title: "Dart-Europe Full Text PDF",
+				mimeType: "application/pdf"
+			})
+		} else if (fulltext.search(/http\:\/\//) != -1){
+			newItem.attachments.push({
+				url: fulltext,
+				title: "DART-Europe Thesis Page",
+				mimeType: "text/html"
+			})
+		}
+	}
+	newItem.attachments.push({
+		document: doc,
+		title: "DART-Europe Record Snapshot",
+		mimeType: "text/html"
+	})
+	newItem.title = title;
+	newItem.thesisType = thesisType;
+	newItem.date = date;
+	newItem.abstractNote = abstract;
+	newItem.language = language;
+	newItem.publisher = publisher;
+	newItem.place = place;
+	newItem.complete();
+}
+
+
+function doWeb(doc, url) {
+
+	var articles = new Array();
+	var items = {};
+	if (detectWeb(doc, url) == "multiple") {
+		//this currently doesn't do anything as multiple detect is disabled
+		var titles = doc.evaluate('//table[@id="search-results"]//a[contains(@href, "full.php?")]', doc, null, XPathResult.ANY_TYPE, null);
+		var next_title;
+		while (next_title = titles.iterateNext()) {
+			items[next_title.href] = next_title.textContent;
+		}
+
+		Zotero.selectItems(items, function (items) {
+			if (!items) {
+				return true;
+			}
+			for (var i in items) {
+				articles.push(i);
+			}
+			Z.debug(articles)
+			Zotero.Utilities.processDocuments(articles, scrape);
+		})
+	} else {
+		scrape(doc, url);
+	}
+}

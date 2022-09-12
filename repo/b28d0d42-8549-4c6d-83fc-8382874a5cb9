@@ -1,0 +1,87 @@
+function detectSearch(items) {
+	return (filterQuery(items).length > 0);
+}
+
+// return an array of DOIs from the query (items or text)
+function filterQuery(items) {
+	if (!items) return [];
+
+	if (typeof items == 'string' || !items.length) items = [items];
+
+	// filter out invalid queries
+	var dois = [], doi;
+	for (var i = 0, n = items.length; i < n; i++) {
+		if (items[i].DOI && (doi = ZU.cleanDOI(items[i].DOI))) {
+			dois.push(doi);
+		}
+		else if (typeof items[i] == 'string' && (doi = ZU.cleanDOI(items[i]))) {
+			dois.push(doi);
+		}
+	}
+	return dois;
+}
+
+function doSearch(items) {
+	var dois = filterQuery(items);
+	if (!dois.length) return;
+	processDOIs(dois);
+}
+
+function processDOIs(dois) {
+	var doi = dois.pop();
+	// by content negotiation we asked for datacite or crossref format, or CSL JSON
+	ZU.doGet('https://doi.org/' + encodeURIComponent(doi), function (text) {
+		if (!text) {
+			return;
+		}
+		Z.debug(text);
+		
+		var trans = Zotero.loadTranslator('import');
+		trans.setString(text);
+		if (text.includes("<crossref")) {
+			// Crossref Unixref
+			trans.setTranslator('93514073-b541-4e02-9180-c36d2f3bb401');
+			trans.setHandler('itemDone', function (obj, item) {
+				item.libraryCatalog = "DOI.org (Crossref)";
+				item.complete();
+			});
+			trans.translate();
+		}
+		else if (text.includes("http://datacite.org/schema")
+				// TEMP
+				// https://github.com/zotero/translators/issues/2018#issuecomment-616491407
+				|| text.includes('"agency": "DataCite"')
+				|| text.includes('"providerId": ')) {
+			// Datacite JSON
+			trans.setTranslator('b5b5808b-1c61-473d-9a02-e1f5ba7b8eef');
+			trans.setHandler('itemDone', function (obj, item) {
+				item.libraryCatalog = "DOI.org (Datacite)";
+				item.complete();
+			});
+			trans.translate();
+		}
+		else {
+			// use CSL JSON translator
+			trans.setTranslator('bc03b4fe-436d-4a1f-ba59-de4d2d7a63f7');
+			trans.setHandler('itemDone', function (obj, item) {
+				item.libraryCatalog = "DOI.org (CSL JSON)";
+				// check if there are potential issues with character encoding and try to fix it
+				// e.g. 10.1057/9780230391116.0016 (en dash in title is presented as escaped unicode)
+				for (var field in item) {
+					if (typeof item[field] != 'string') continue;
+					// check for control characters that should never be in strings from CrossRef
+					if (/[\u007F-\u009F]/.test(item[field])) {
+						var escaped = item[field].replace(/[^0-9A-Za-z ]/g, function (c) {
+							return "%" + c.charCodeAt(0).toString(16);
+						});
+						item[field] = decodeURIComponent(escaped);
+					}
+				}
+				item.complete();
+			});
+			trans.translate();
+		}
+	}, function () {
+		if (dois.length) processDOIs(dois);
+	}, undefined, { Accept: "application/vnd.datacite.datacite+json, application/vnd.crossref.unixref+xml, application/vnd.citationstyles.csl+json" });
+}

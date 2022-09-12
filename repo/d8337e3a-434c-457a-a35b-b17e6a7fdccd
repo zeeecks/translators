@@ -1,0 +1,118 @@
+const sourceRe = /([^(]+).*v\.([^\s,]+).*no\.([^\s,]+).*/;
+const pagesRe = /p\.(\S+)/;
+
+function detectWeb(doc, url) {
+	if (url.includes('?abstract')) {
+		for (let tr of doc.querySelectorAll('.hsdl-content tr')) {
+			if (text(tr, '.label').includes('Report Number:')) {
+				return "report";
+			}
+			if (text(tr, '.label').includes('Source:')
+				&& sourceRe.test(text(tr, 'td:not(.label)'))) {
+				return "journalArticle";
+			}
+			if (text(tr, '.label').includes('Series:')
+				&& text(tr, 'td:not(.label)').toLowerCase().includes('theses')) {
+				return "thesis";
+			}
+		}
+		return "document";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.new_result');
+	for (let row of rows) {
+		let href = attr(row, 'a[href^="?abstract"]', 'href');
+		let title = ZU.trimInternal(text(row, '.results_title'));
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item('document');
+	
+	item.title = text(doc, 'h2 > a').replace(/\[.*$/, '');
+	item.abstractNote = text(doc, '.hsdl-content > p').replace(/^"|"$/g, '');
+	
+	let mimeType = 'application/pdf';
+	
+	for (let row of doc.querySelectorAll('.hsdl-content > table tr')) {
+		let label = text(row, '.label');
+		if (label == 'Author:') {
+			item.creators = [...row.querySelectorAll('a')]
+				.map(link => ZU.cleanAuthor(link.textContent, 'author', true));
+		}
+		else {
+			let value = text(row, 'td:not(.label)');
+			switch (label) {
+				case 'Publisher:':
+					item.publisher = value;
+					break;
+				case 'Date:':
+					item.date = value;
+					break;
+				case 'Copyright:':
+					item.rights = value;
+					break;
+				case 'Media Type:':
+					mimeType = value;
+					break;
+				case 'Source:': {
+					let matches = value.match(sourceRe);
+					if (matches) {
+						item.itemType = 'journalArticle';
+						[, item.publicationTitle, item.volume, item.issue] = matches;
+					}
+					else {
+						item.extra = (item.extra || '') + `\nHSDL Source: ${value}`;
+					}
+					item.pages = (value.match(pagesRe) || [])[1] || item.pages;
+					break;
+				}
+				case 'URL:':
+					item.DOI = ZU.cleanDOI(value);
+					break;
+				case 'Report Number:':
+					item.itemType = 'report';
+					item.reportNumber = value;
+					break;
+				case 'Series:':
+					if (value.toLowerCase().includes('theses')) {
+						item.itemType = 'thesis';
+					}
+			}
+		}
+	}
+	
+	item.url = url.replace(/#.*$/, '');
+	
+	item.attachments.push({
+		title: 'Full Text PDF',
+		mimeType,
+		url: attr(doc, 'h2 > a', 'href')
+	});
+	
+	item.complete();
+}

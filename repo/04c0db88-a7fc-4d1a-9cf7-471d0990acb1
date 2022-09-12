@@ -1,0 +1,30 @@
+function detectWeb(doc, url) { return FW.detectWeb(doc, url); }
+function doWeb(doc, url) { return FW.doWeb(doc, url); }
+
+ 
+
+/** Articles */
+FW.Scraper({
+itemType         : 'magazineArticle',
+detect           : FW.Xpath('//h1[@id="headline"]'),
+title            : FW.Xpath('//h1[@id="headline"]').text().trim(),
+attachments      : [{ url: FW.Url(),
+  title:  "CS Monitor Snapshot",
+  type: "text/html" }],
+creators         : FW.Xpath('//meta[contains(@name, "sailthru.author")]/@content').text().cleanAuthor("author"),
+date             : FW.Xpath('//time[@id="date-published"]/@datetime').text(),
+abstractNote     : FW.Xpath('//h2[@id="summary"]').text(),
+ISSN			 : "0882-7729",
+publicationTitle : "Christian Science Monitor"
+});
+ 
+
+ 
+FW.MultiScraper({
+itemType         : 'multiple',
+detect           : FW.Url().match(/\/content\/search\?/),
+choices          : {
+  titles :  FW.Xpath('//h3[@class="story_headline"]/a').text().trim(),
+  urls    :  FW.Xpath('//h3[@class="story_headline"]/a').key("href")
+}
+});

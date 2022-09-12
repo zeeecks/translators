@@ -1,0 +1,148 @@
+function detectWeb(doc, url) {
+	if (url.includes('konyv')) {
+		return "book";
+	}
+	else if (url.includes('index.php?type=search') && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.src-result-book');
+	for (let row of rows) {
+		var href = attr(row, '#searchResultKonyv-csempes', 'href');
+		var title = ZU.trimInternal(text(row, '.book-title-src'));
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, _url) {
+	var newItem = new Zotero.Item('book');
+
+	newItem.title = text(doc, '[itemprop=name]', 0).trim();
+
+	var subtitle = text(doc, '[itemprop=alternateName]', 0) ? text(doc, '[itemprop=alternateName]', 0).trim() : null;
+	if (subtitle) {
+		newItem.title = newItem.title + ': ' + capitalizeHungarianTitle(subtitle, true);
+	}
+
+	var authors = Array.from(doc.querySelectorAll('[itemprop=author]')).map(x => cleanHungarianAuthor(x.innerText));
+	authors.forEach(x => newItem.creators.push(x));
+
+	var abstract = text(doc, 'fulszovegFull', 0) || text(doc, 'eloszoFull', 0);
+	if (abstract) {
+		newItem.abstractNote = abstract.replace(' Vissza', '').trim();
+	}
+
+	var seriesElement = doc.getElementById('konyvAdatlapSorozatLink');
+	if (seriesElement && seriesElement.length) {
+		newItem.series = seriesElement.innerText;
+		newItem.seriesNumber = getElementByInnerText('th', 'Kötetszám:').parentElement.children[1].innerText;
+		newItem.volume = newItem.seriesNumber;
+	}
+
+	var publisherName = text(doc, '#konyvAdatlapKiadoLink [itemprop=name]')
+		|| text(doc, '[itemprop=name]', 1);
+	if (publisherName) {
+		newItem.publisher = publisherName;
+	}
+
+	var publisherPlace = firstText(doc, '[itemprop=address]');
+	if (publisherPlace) {
+		newItem.place = publisherPlace.replace('(', '').replace(')', '');
+	}
+		
+	newItem.date = firstText(doc, '[itemprop=datePublished]');
+
+	newItem.numPages = firstText(doc, '[itemprop=numberOfPages]');
+	
+	newItem.language = firstText(doc, '[itemprop=inLanguage]');
+
+	var isbnElement = getElementByInnerText(doc, 'th', 'ISBN:');
+	if (isbnElement) {
+		newItem.ISBN = isbnElement.parentElement.children[1].innerText;
+	}
+
+	var contentsElement = doc.getElementById('tartalomFull');
+	if (contentsElement) {
+		newItem.notes.push({ note: contentsElement.innerText });
+	}
+
+	newItem.attachments.push({ document: doc, title: "Antikvarium.hu Snapshot", mimeType: "text/html" });
+
+	newItem.complete();
+}
+
+/**
+ * Return the first element matching the selector with non-empty text.
+ */
+function firstText(docOrElem, selector) {
+	for (let elem of docOrElem.querySelectorAll(selector)) {
+		let elemText = elem.textContent.trim();
+		if (elemText) return elemText;
+	}
+	
+	return '';
+}
+
+function getElementByInnerText(doc, elementType, innerText) {
+	var tags = doc.getElementsByTagName(elementType);
+
+	for (var i = 0; i < tags.length; i++) {
+		if (tags[i].textContent == innerText) {
+			return tags[i];
+		}
+	}
+	return null;
+}
+
+function cleanHungarianAuthor(authorName) {
+	if (authorName.includes(',')) {
+		return Zotero.Utilities.cleanAuthor(authorName, 'author', true);
+	}
+	else {
+		var author = Zotero.Utilities.cleanAuthor(authorName, 'author', false);
+		var firstName = author.lastName;
+		var lastName = author.firstName;
+		author.firstName = firstName;
+		author.lastName = lastName;
+		return author;
+	}
+}
+
+function capitalizeHungarianTitle(title) {
+	title = title[0].toUpperCase() + title.substring(1).toLowerCase();
+	var words = title.split(/[ !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~]/);
+	words.forEach((w) => {
+		if (isRomanNumeral(w)) {
+			title = title.replace(w, w.toUpperCase());
+		}
+	});
+	return title;
+}
+
+function isRomanNumeral(word) {
+	var romanRegex = /^M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$/;
+	return !!word.toUpperCase().match(romanRegex);
+}

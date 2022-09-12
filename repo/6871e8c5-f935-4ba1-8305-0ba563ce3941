@@ -1,0 +1,84 @@
+function detectWeb(doc, url) {
+	if (url.indexOf('search?')>-1 && getSearchResults(doc, true)) {
+		return "multiple";
+	} else if (ZU.xpathText(doc, '//section[@id="action-icons" and contains(., "Dublin Core")]')){
+		return "journalArticle";
+	} 
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//article[contains(@class, "search-result")]//a');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	//Somehow it is important to switch here also to English in the
+	//parameter, because otherwise it will not work when the original
+	//website is viewed in French.
+	var urlRDF = url.split(';')[0] + ";dc?sf_culture=en&sf_format=xml";
+	
+	ZU.doGet(urlRDF, function(text) {
+		var parser = new DOMParser();
+		var xml = parser.parseFromString(text, "text/xml");
+		//call RDF translator
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("5e3ad958-ac79-463d-812b-a86a9235c28f");
+		translator.setString(text);
+		translator.setHandler('itemDone', function (obj, item) {
+			var identifiers = xml.getElementsByTagNameNS('http://purl.org/dc/elements/1.1/', 'identifier');
+			var value;
+			for (var i=0; i<identifiers.length; i++) {
+				value = identifiers[i].textContent;
+				if (value.indexOf('http')>-1) {
+					item.url = value;
+				}
+				if (value.indexOf('Acc')>-1) {
+					item.callNumber = value;
+				}
+			}
+			var format = xml.getElementsByTagNameNS('http://purl.org/dc/elements/1.1/', 'format');
+			if (format) {
+				item.notes.push({note: "Format: " + format[0].textContent});
+			}
+			if (item.abstractNote) {
+				item.abstractNote = ZU.unescapeHTML(item.abstractNote);
+			}
+			if (item.rights) {
+				item.rights = item.rights.toLowerCase();
+			}
+			delete item.itemID;//otherwise this will show up as difference in testing
+			item.complete();
+		});
+		translator.translate();
+	});
+}

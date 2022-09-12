@@ -1,0 +1,96 @@
+function detectWeb(doc, url) {
+	if (url.indexOf('_search?') != -1 && getSearchResults(doc, true, url)) {
+		return "multiple";
+	} else if (url.search(/i[a-z]\d{8}/) != -1) {
+		var title = ZU.trimInternal(ZU.xpath(doc, '//div[contains(@class, "ample-record")]/h3')[0].textContent);
+		if (title) {
+			return 'book';
+		}
+	}
+}
+
+
+function getSearchResults(doc, checkOnly, url) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//p[contains(@class, "ample-shortlist-item-entry")]/a[contains(@href, "/istc/i")]');
+	for (i = 0; i < rows.length; i++) {
+		var title = ZU.trimInternal(rows[i].textContent);
+		var href = rows[i].href + '?format=json';
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false, url), function(items) {
+			if (!items) {
+				return true;
+			}
+			var books = [];
+			for (var i in items) {
+				books.push(i);
+			}
+			ZU.doGet(Object.keys(items), scrape);
+		});
+	} else if (detectWeb(doc, url) == "book") {
+		ZU.doGet(url + '?format=json', scrape);
+	}
+}
+
+
+function scrape(response, obj, url) {
+	var jsonObject = JSON.parse(response);
+	var data = jsonObject.data;
+	var item = new Zotero.Item('book');
+
+	var name = data.author;
+	item.creators.push(Zotero.Utilities.cleanAuthor(name, "author", true))
+
+	item.title = data.title;
+	item.url = url.replace('?format=json', '');
+
+	var imprint = data.imprint[0];
+	item.place = (imprint.imprint_place || '');
+	item.publisher = (imprint.imprint_name || '');
+	item.date = (imprint.imprint_date || '');
+
+	if (data.notes) {
+		item.notes.push(data.notes[0]);
+	}
+
+	if (imprint.geo_info && imprint.geo_info[0].geonames_id) {
+		item.notes.push('Geonames identifier of printing place: ' + imprint.geo_info[0].geonames_id);
+	}
+
+	if (data.references) {
+		var concatRef = '';
+		for (var i in data.references) {
+			var ref = data.references[i];
+			var refName = (ref.reference_name || '');
+			var refLoc = (ref.reference_location_in_source || '');
+			concatRef += (refName + ' ' + refLoc + '; ');
+		}
+		concatRef = concatRef.replace(/; $/, '');
+		item.notes.push('References: ' + concatRef);
+	}
+
+	item.callNumber = 'ISTC ' + jsonObject._id;
+	item.language = (data.language_of_item || '');
+	item.libraryCatalog = 'Incunabula Short Title Catalogue (ISTC)';
+	item.tags = ['incunabula', 'istc'];
+	item.accessed = new Date().toString();
+	// // Uncomment the following if you always want to save the page as attachment:
+	//  item.attachments = [{
+	//	url: url.replace('?format=json', ''),
+	//	title: "ISTC",
+	//	mimeType: "text/html",
+	//	snapshot: true
+	// }];		
+	item.complete();
+}

@@ -1,0 +1,97 @@
+function detectWeb(doc, url) {
+	if (url.includes('/artikel/')) {
+		return "newspaperArticle";
+	}
+	else if (url.includes('/sok?') && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a.search-item');
+	for (let i = 0; i < rows.length; i++) {
+		let href = rows[i].href;
+		let title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+
+	translator.setHandler('itemDone', function (obj, item) {
+		item.publicationTitle = "Sveriges Radio";
+
+		item.creators = [];
+		var nameNodes = ZU.xpath(doc, '//p[@class="byline"]/text()');
+		for (let node of nameNodes) {
+			// Take the first two strings of non-spaces as the names. The byline
+			// can vary in format, including:
+			// First Last
+			// First Last SecondLast
+			// First Last, City
+			// First Last City, Country
+			var nameString = node.wholeText.split(" ", 2).join(" ");
+			var author = ZU.cleanAuthor(nameString, "author");
+			item.creators.push(author);
+		}
+		if (item.creators.length === 1 && item.creators[0].lastName === "Ekot") {
+			// Special case when only signed as "Ekot", i.e. no person
+			// specified as author.
+			item.creators[0].fieldMode = true;
+			item.creators[0].firstName = undefined;
+		}
+
+		// The title from the meta is in the format:
+		// Australierna säger ja till samkönade äktenskap - Nyheter (Ekot)
+		var titleString = attr(doc, 'meta[name="twitter:title"]', "content");
+		var titleParts = titleString.split(" - ");
+		item.title = titleParts[0];
+		item.section = titleParts[1];
+
+		var dateString = attr(doc, '.publication-metadata time', 'datetime');
+		item.date = dateString;
+		
+		item.tags = [];
+
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = "newspaperArticle";
+		trans.addCustomFields({
+			'twitter:description': 'abstractNote'
+		});
+		trans.doWeb(doc, url);
+	});
+}

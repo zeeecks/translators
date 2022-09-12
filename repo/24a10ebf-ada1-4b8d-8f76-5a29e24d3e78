@@ -1,0 +1,86 @@
+/* Some other sample sites:
+https://stat.ethz.ch/CRAN/web/packages/MCMCpack/
+https://cloud.r-project.org/web/packages/asciiruler/index.html
+*/
+
+
+function detectWeb(doc, url) {
+	if (text(doc, 'h2')) {
+		return "computerProgram";
+	}
+	else if ((url.includes('/available_packages_by_date.html') || url.includes('/available_packages_by_name.html')) && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('tr>td>a[href*="/web/packages/"]');
+	for (let i = 0; i < rows.length; i++) {
+		let href = rows[i].href;
+		let title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var item = new Zotero.Item('computerProgram');
+	item.title = text(doc, 'h2');
+	
+	var authorString = ZU.xpathText(doc, '//table/tbody/tr/td[contains(text(), "Author")]/following-sibling::td');
+	if (authorString) {
+		var creators = authorString.replace(/\[.+?\]/g, '').split(/\s*,\s*/);
+		for (let i = 0; i < creators.length; i++) {
+			if (creators[i].trim() == "R Core Team") {
+				item.creators.push({
+					lastName: creators[i].trim(),
+					fieldMode: true,
+					creatorType: "author"
+				});
+			}
+			else {
+				item.creators.push(ZU.cleanAuthor(creators[i], 'author'));
+			}
+		}
+	}
+	
+	item.versionNumber = ZU.xpathText(doc, '//table/tbody/tr/td[contains(text(), "Version")]/following-sibling::td');
+	item.abstractNote = ZU.trimInternal(text(doc, 'body p') || '');
+	item.date = ZU.xpathText(doc, '//table/tbody/tr/td[contains(text(), "Published")]/following-sibling::td');
+	item.rights = ZU.xpathText(doc, '//table/tbody/tr/td[contains(text(), "License")]/following-sibling::td');
+	
+	item.url = text(doc, 'a>samp') || url;
+	var tags = ZU.xpath(doc, '//td[contains(text(), "views")]/following-sibling::td/a');
+	for (let i = 0; i < tags.length; i++) {
+		item.tags.push(tags[i].textContent);
+	}
+	
+	item.complete();
+}

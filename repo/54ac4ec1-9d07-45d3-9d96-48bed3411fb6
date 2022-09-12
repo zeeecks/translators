@@ -1,0 +1,88 @@
+function detectWeb(doc, url) {
+	if (url.match("/Record/[0-9]+")) {
+		var format = doc.getElementById("myformat").textContent;
+		return computeFormat(format);
+	}
+	else if (url.includes("/Search/Home") && doc.getElementById("resultItemLine1")) {
+		return "multiple";
+	}
+	return "book";
+}
+
+
+// map the nla formats to zotero formats
+function computeFormat(format) {
+	// clean up whitespace and remove commas from items with multiple formats
+	format = Zotero.Utilities.trimInternal(format.replace(',', ''));
+	if (format == "Audio") return "audioRecording";
+	if (format == "Book") return "book";
+	if (format == "Journal/Newspaper") return "journalArticle";
+	if (format == "Manuscript") return "manuscript";
+	if (format == "Map") return "map";
+	if (format == "Music") return "audioRecording";
+	if (format == "Online") return "webpage";
+	if (format == "Picture") return "artwork";
+	if (format == "Video") return "videoRecording";
+	// default
+	return "book";
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.resultitem a.title');
+	for (let i = 0; i < rows.length; i++) {
+		let href = rows[i].href;
+		if (!/\/Record\/\d+/.test(href)) continue;
+		let title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) return;
+			processUrls(Object.keys(items));
+		});
+	}
+	else {
+		processUrls([url]);
+	}
+}
+
+
+function processUrls(urls) {
+	for (let i = 0; i < urls.length; i++) {
+		var bibid = urls[i].match(/\/Record\/(\d+)\b/);
+		if (bibid) {
+			var marcUrl = "/Record/" + bibid[1] + "/Export?style=marc";
+			ZU.doGet(marcUrl, scrapeMarc);
+		}
+	}
+}
+
+function scrapeMarc(text) {
+	var translator = Zotero.loadTranslator("import");
+	translator.setTranslator("a6ee60df-1ddc-4aae-bb25-45e0537be973");
+	translator.setString(text);
+	translator.getTranslatorObject(function (obj) {
+		var record = new obj.record();
+		// Populate the record from the MARC
+		record.importBinary(text);
+		var item = new Zotero.Item();
+		// If there is a url for the digitised item add it
+		var [url] = record.getFieldSubfields("856");
+		if (url && url.u && url.z && url.z.startsWith("National Library of Australia digitised item")) {
+			item.url = url.u;
+		}
+		record.translate(item);
+		item.complete();
+	});
+}

@@ -1,0 +1,216 @@
+// copied from CSL JSON
+function parseInput() {
+	var str, json = "";
+	
+	// Read in the whole file at once, since we can't easily parse a JSON stream. The 
+	// chunk size here is pretty arbitrary, although larger chunk sizes may be marginally
+	// faster. We set it to 1MB.
+	while ((str = Z.read(1048576)) !== false) json += str;
+	
+	try {
+		return JSON.parse(json);
+	} catch(e) {
+		Zotero.debug(e);
+	}
+}
+
+function detectImport() {
+	var parsedData = parseInput();
+	if (parsedData && parsedData.schemaVersion && parsedData.schemaVersion.startsWith("http://datacite.org/schema/")) {
+		return true;
+	}
+	return false;
+}
+
+
+var mappingTypes = {
+	"book": "book",
+	"chapter": "bookSection",
+	"article-journal": "journalArticle",
+	"article-magazine": "magazineArticle",
+	"article-newspaper": "newspaperArticle",
+	"thesis": "thesis",
+	"entry-encyclopedia": "encyclopediaArticle",
+	"entry-dictionary": "dictionaryEntry",
+	"paper-conference": "conferencePaper",
+	"personal_communication": "letter",
+	"manuscript": "manuscript",
+	"interview": "interview",
+	"motion_picture": "film",
+	"graphic": "artwork",
+	"webpage": "webpage",
+	"report": "report",
+	"bill": "bill",
+	"legal_case": "case",
+	"patent": "patent",
+	"legislation": "statute",
+	"map": "map",
+	"post-weblog": "blogPost",
+	"post": "forumPost",
+	"song": "audioRecording",
+	"speech": "presentation",
+	"broadcast": "radioBroadcast",
+	"dataset": "document"
+};
+
+
+
+function doImport() {
+	var data = parseInput();
+
+	var type = "journalArticle";
+	if (data.types.citeproc && mappingTypes[data.types.citeproc]) {
+		type = mappingTypes[data.types.citeproc];
+	}
+	if (["softwaresourcecode", "softwareapplication", "mobileapplication", "videogame", "webapplication"].includes(data.types.schemaOrg.toLowerCase())) {
+		type = "computerProgram";
+	}
+
+	var item = new Zotero.Item(type);
+	if (data.types.citeproc == "dataset") {
+		item.extra = "Type: dataset";
+	}
+	var title = "";
+	for (let titleElement of data.titles) {
+		if (!titleElement.title) {
+			continue;
+		}
+		if (!titleElement.titleType) {
+			title = titleElement.title + title;
+		} else if (titleElement.titleType.toLowerCase() == "subtitle") {
+			title = title + ": " + titleElement["title"];
+		}
+		
+	}
+	item.title = title;
+	
+	if (data.creators) {
+		for (let creator of data.creators) {
+			if (creator.nameType == "Personal") {
+				if (creator.familyName && creator.givenName) {
+					item.creators.push({
+						"lastName": creator.familyName,
+						"firstName": creator.givenName,
+						"creatorType": "author"
+					});
+				} else {
+					item.creators.push(ZU.cleanAuthor(creator.name, "author", true));
+				}
+			} else {
+				item.creators.push({"lastName": creator.name, "creatorType": "author", "fieldMode": true});
+			}
+		}
+	}
+	if (data.contributors) {
+		for (let contributor of data.contributors) {
+			let role = "contributor";
+			if (contributor.contributorRole) {
+				switch(contributor.contributorRole.toLowerCase()) {
+					case "editor":
+						role = "editor";
+						break;
+					case "producer":
+						role = "producer";
+						break;
+					default:
+						// use the already assigned value
+				}
+			}
+			if (contributor.nameType == "Personal") {
+				if (contributor.familyName && contributor.givenName) {
+					item.creators.push({
+						"lastName": contributor.familyName,
+						"firstName": contributor.givenName,
+						"creatorType": role
+					});
+				} else {
+					item.creators.push(ZU.cleanAuthor(contributor.name, role));
+				}
+			} else {
+				item.creators.push({"lastName": contributor.name, "creatorType": role, "fieldMode": true});
+			}
+		}
+	}
+	
+	item.publisher = data.publisher;
+	
+	let dates = {};
+	if (data.dates) {
+		for (let date of data.dates) {
+			dates[date.dateType] = date.date;
+		}
+		item.date = dates["Issued"] || dates["Updated"] || dates["Available"]  || dates["Accepted"] || dates["Submitted"] || dates["Created"] || data.publicationYear;
+	}
+	
+	item.DOI = data.doi;
+	//add DOI to extra for unsupported items
+	if (item.DOI && !ZU.fieldIsValidForType("DOI", item.itemType)) {
+		if (item.extra){
+			item.extra += "\nDOI: " + item.DOI;
+		} else {
+			item.extra = "DOI: " + item.DOI;
+		}
+	}
+	item.url = data.url;
+	item.language = data.language;
+	if (data.subjects) {
+		for (let subject of data.subjects) {
+			item.tags.push(subject.subject);
+		}
+	}
+	if (data.formats) {
+		item.medium = data.formats.join();
+	}
+	if (data.sizes) {
+		item.pages = item.artworkSize = data.sizes.join(", ");
+	}
+	item.versionNumber = data.version;
+	if (data.rightsList) {
+		item.rights = data.rightsList.map(x => x.rights).join(", ");
+	}
+	
+	var descriptionNote = "";
+	if (data.descriptions) {
+		for (let description of data.descriptions) {
+			if (description.descriptionType == "Abstract") {
+				item.abstractNote = description.description;
+			} else {
+				descriptionNote += "<h2>" + description.descriptionType + "</h2>\n" + description.description;
+			}
+		}
+	}
+	if (descriptionNote !== "") {
+		item.notes.push({"note": descriptionNote});
+	}
+	if (data.container) {
+		if (data.container.type == "Series") {
+			item.publicationTitle = data.container.title;
+			item.volume = data.container.volume;
+			var pages = (data.container.firstPage || "") + (data.container.lastPage || "");
+			if (!item.pages && pages !== "") {
+				item.pages = pages;
+			}
+		}
+		if (data.container.identifier && data.container.identifierType) {
+			if (data.container.identifierType == "ISSN") {
+				item.ISSN = data.container.identifier;
+			}
+			if (data.container.identifierType == "ISBN") {
+				item.ISBN = data.container.identifier;
+			}
+		}
+	}
+	
+	if (data.relatedIdentifiers) {
+		for (let relates of data.relatedIdentifiers) {
+			if (!item.ISSN && relates.relatedIdentifierType == "ISSN") {
+				item.ISSN = relates.relatedIdentifier;
+			}
+			if (!item.ISBN && relates.relatedIdentifierType == "ISBN") {
+				item.ISBN = relates.relatedIdentifier;
+			}
+		}
+	}
+	
+	item.complete();
+}

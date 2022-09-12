@@ -1,0 +1,105 @@
+function detectWeb(doc, url) {
+	var regex = /\/r\/[a-z\d_]+\/comments\//i;
+	if (regex.test(url)) {
+		return 'forumPost';
+	}
+	else if (getSearchResults(doc, true)) {
+		return 'multiple';
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//a[div/h3]');
+	if (!rows.length) rows = doc.querySelectorAll('.entry');
+	for (let row of rows) {
+		let href, title;
+		if (row.href) {
+			href = row.href;
+			title = ZU.trimInternal(row.textContent);
+		}
+		else {
+			href = attr(row, '.comments', 'href');
+			title = text(row, '.title > a');
+		}
+		if (!href || !title) continue;
+		href += '.json';
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	var jsonUrl = url.split("?")[0] + '.json';
+	var commentRegex = /\/r\/[a-z\d_]+\/comments\/[a-z\d]+\/[a-z\d_]+\/[a-z\d]+\//i;
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.doGet(articles, scrape);
+		});
+	}
+	else if (detectWeb(doc, url) == "forumPost" && commentRegex.test(url)) {
+		ZU.doGet(jsonUrl, scrapeComment);
+	}
+	else {
+		ZU.doGet(jsonUrl, scrape);
+	}
+}
+
+
+function scrape(text) {
+	var newItem = new Zotero.Item("forumPost");
+	var redditJson = JSON.parse(text);
+	var redditData = redditJson[0].data.children[0].data;
+	newItem.title = redditData.title;
+	if (redditData.author != '[deleted]') {
+		newItem.creators.push(ZU.cleanAuthor(redditData.author, "author", true));
+	}
+	newItem.url = 'www.reddit.com' + redditData.permalink;
+	var postDate = new Date(redditData.created_utc * 1000);
+	newItem.date = postDate.toISOString();
+	newItem.postType = "Reddit Post";
+	newItem.forumTitle = 'r/' + redditData.subreddit;
+	newItem.websiteTitle = "reddit.com";
+	newItem.attachments.push({
+		url: 'https://www.reddit.com' + redditData.permalink,
+		title: "Reddit Post Snapshot",
+		mimetype: "text/html"
+	});
+	newItem.complete();
+}
+
+function scrapeComment(text) {
+	var newItem = new Zotero.Item("forumPost");
+	var redditJson = JSON.parse(text);
+	var parentData = redditJson[0].data.children[0].data;
+	var redditData = redditJson[1].data.children[0].data;
+	newItem.title = ZU.ellipsize(redditData.body, 20);
+	if (redditData.author != '[deleted]') {
+		newItem.creators.push(ZU.cleanAuthor(redditData.author, "author", true));
+	}
+	newItem.url = 'www.reddit.com' + redditData.permalink;
+	var postDate = new Date(redditData.created_utc * 1000);
+	newItem.date = postDate.toISOString();
+	newItem.postType = "Reddit Comment";
+	newItem.forumTitle = 'r/' + redditData.subreddit;
+	newItem.websiteTitle = "reddit.com";
+	newItem.extra = 'Post URL: www.reddit.com' + parentData.permalink;
+	newItem.attachments.push({
+		url: 'https://www.reddit.com' + redditData.permalink,
+		title: "Reddit Comment Snapshot",
+		mimetype: "text/html"
+	});
+	newItem.complete();
+}

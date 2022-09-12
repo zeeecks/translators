@@ -1,0 +1,130 @@
+var typeMapping = {
+	//"Blindendrucke" 
+	"Bücher" : "book",
+	//"Elektronische Datenträger" 
+	"Filme/Hörbücher" : "videoRecording",
+	"Karten" : "map",
+	//"Medienkombinationen"
+	//"Mikroformen"
+	"Musiktonträger" : "audioRecording",
+	//"Musiknoten" 
+	"Artikel" : "journalArticle",
+	//"Online Ressourcen"
+	//"Zeitschriften/Serien"
+	//"Ausgaben/Hefte"
+	"archivierte Webseiten" : "webpage",
+	//"Gesamttitel Sammlung/Nachlass"
+	"Manuskripte" : "manuscript",
+	"Briefe" : "letter",
+	//"Lebensdokumente"
+	//"Sammlungen"
+	//"Trägermaterialien (Papiere und Einbände)"
+	"Bilder/Grafiken" : "artwork"
+	//"Flugblätter"
+};
+
+function detectWeb(doc, url) {
+	if (
+		url.indexOf('method=showFullRecord')>-1 ||
+		(url.indexOf('method=simpleSearch')>-1 && doc.getElementById('fullRecordTable'))
+	) {
+		var type=ZU.xpathText(doc, '//table[@id="fullRecordTable"]/tbody/tr/td/img/@alt');
+		if (typeMapping[type]) {
+			return typeMapping[type];
+		} else {
+			return "book";
+		}
+	} else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//table[@id="searchresult"]//a[contains(@id, "recordLink")]');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].firstChild.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var marc = ZU.xpath(doc, '//div[@class="link"]//a[contains(@href, "/about/marcxml")]');
+	if (marc.length) {
+		var marcUrl = marc[0].href;
+		
+		ZU.doGet(marcUrl, function(result) {
+			
+			//call MARCXML translator
+			var translator = Zotero.loadTranslator("import");
+			translator.setTranslator("edd87d07-9194-42f8-b2ad-997c4c7deefd");
+			translator.setString(result);
+			translator.setHandler("itemDone", function (obj, item) {
+				finalize(doc, item);
+				item.complete();
+			});
+			translator.translate();
+		});
+		
+	} else {
+		Z.debug("No MARC link found --> Use COinS translator");
+		
+		//call COinS translator
+		var translator = Zotero.loadTranslator("web");
+		translator.setTranslator("05d07af9-105a-4572-99f6-a8e231c0daef");
+		translator.setDocument(doc);
+		translator.setHandler("itemDone", function (obj, item) {
+			finalize(doc, item);
+			item.complete();
+		});
+		translator.translate();
+
+	}
+}	
+
+
+function finalize(doc, item) {
+	var toc = ZU.xpath(doc, '//a[contains(@title, "Inhaltsverzeichnis")]');
+	if (toc.length) {
+		item.attachments.push( {
+			url : toc[0].href,
+			title: "Table of Contents PDF",
+			mimeType: "application/pdf"
+		});
+	}
+	
+	var abstract = ZU.xpath(doc, '//a[contains(@title, "Inhaltstext")]');
+	if (abstract.length) {
+		item.attachments.push( {
+			url : abstract[0].href,
+			title: "Abstract",
+			mimeType: "text/html"
+		});
+	}
+	
+	item.callNumber = "";
+}

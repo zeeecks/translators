@@ -1,0 +1,95 @@
+function detectWeb(doc, url) {
+	var m = url.match(/^https?:\/\/[^/]+\/[^/]*\/[^/]*\/\d+/);
+	//Z.debug(m)
+	if (url.includes('/node/') || m) {
+		return "magazineArticle";
+	}
+	if (getSearchResults(doc, url, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function scrape(doc, url) {
+	var newItem = new Zotero.Item("magazineArticle");
+	newItem.ISSN = "0013-0613";
+	newItem.url = url;
+	newItem.publicationTitle = "The Economist";
+
+	// Headline
+	var title = text('h1 *[itemprop=headline]');
+	// As of 10/2020 these meta tags seem to be removed from the DOM after page load,
+	// so this won't work
+	if (!title) title = ZU.xpathText(doc, '//meta[@property="og:title"]/@content');
+	if (!title) {
+		try {
+			title = JSON.parse(text('script#__NEXT_DATA__')).props.pageProps.content.headline;
+		}
+		catch (e) {}
+	}
+	newItem.title = title;
+
+	if (doc.evaluate('//div[@class="clear"][@id="pay-barrier"]/div[@class="col-right"]', doc, null, XPathResult.ANY_TYPE, null).iterateNext()) {
+		newItem.extra = "(Subscription only)";
+		newItem.complete();
+		return;
+	}
+	//get abstract
+	var abstract = ZU.xpathText(doc, '//h1[@class="rubric"]');
+	if (!abstract) abstract = ZU.xpathText(doc, '//*[@itemprop="description"]');
+	newItem.abstractNote = abstract;
+	//get date and extra stuff
+	newItem.date = ZU.xpathText(doc, '//time[@itemtype="http://schema.org/DateTime"]/@datetime');
+	newItem.attachments = [{
+		document: doc,
+		title: "The Economist Snapshot",
+		mimeType: "text/html"
+	}];
+
+	newItem.complete();
+}
+
+
+function getSearchResults(doc, url, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows;
+	if (url.includes('/search?')) {
+		rows = ZU.xpath(doc, '//a[@class="search-result"]');
+	}
+	else {
+		rows = doc.querySelectorAll('a.headline-link');
+	}
+	for (let i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		let [subhead, head] = rows[i].innerText.split(/\n/);
+		let title = ZU.trimInternal(subhead);
+		if (head) {
+			title = ZU.trimInternal(head) + ' — ' + title;
+		}
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, url, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}

@@ -1,0 +1,64 @@
+function detectWeb(doc, url) {
+	if (url.includes('/id/')) {
+		return "book";
+		// something like archival material would be more appropriate...
+		// but for now we use this type to save some information
+	}
+	// multiples will not work easily because the API will then return
+	// somehow an empty json, thus we skipped this here.
+	return false;
+}
+
+
+function doWeb(doc, url) {
+	var position = url.indexOf('/id/');
+	var id = url.substr(position + 4);
+	var posturl = 'https://catalog.archives.gov/OpaAPI/iapi/v1/exports/noauth';
+	var postdata = 'export.format=json&export.type=full&export.what=metadata&naIds=' + id + '&rows=1';
+	
+	ZU.doPost(posturl, postdata, function (result) {
+		var parsed = JSON.parse(result);
+		var exporturl = parsed.opaResponse.exportFile.url;
+		ZU.doGet(exporturl, function (data) {
+			var json = JSON.parse(data);
+			var item = new Zotero.Item("book");
+			
+			item.title = json[0].title;
+			var creators = json[0].creators;
+			for (var i = 0; i < creators.length; i++) {
+				creators[i] = creators[i].replace('(Most Recent)', '');
+				if (creators[i].includes(", ")) {
+					creators[i] = creators[i].replace(/, \d{4}\s*-\s*(\d{4})?$/, '').replace(/\([^(]+\)/, '');
+					item.creators.push(ZU.cleanAuthor(creators[i], "author", true));
+				}
+				else {
+					creators[i] = creators[i].replace(/\.? ?\d\d?\/\d\d?\/\d\d\d\d-\d\d?\/\d\d?\/\d\d\d\d/, '');
+					if (creators[i].length > 255) {
+						creators[i] = creators[i].substr(0, 251) + '...';
+					}
+					item.creators.push({ lastName: creators[i].trim(), creatorType: 'author', fieldMode: true });
+				}
+			}
+			if (json[0].productionDates) {
+				item.date = json[0].productionDates[0];
+			}
+			else {
+				item.date = json[0].date;
+			}
+			if (json[0].from) {
+				item.series = json[0].from[0];
+			}
+			item.abstractNote = json[0].scopeAndContentNote;
+			item.archive = json[0].archivedCopies.contacts1[0];
+			item.archiveLocation = json[0].localIdentifier;
+			item.extra = 'National Archives Identifier: ' + json[0].arcIdentifier;
+			
+			item.attachments.push({
+				document: doc,
+				title: "Snapshot"
+			});
+
+			item.complete();
+		});
+	});
+}

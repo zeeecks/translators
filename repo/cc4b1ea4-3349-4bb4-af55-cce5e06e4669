@@ -1,0 +1,57 @@
+function detectWeb(doc, url) {
+	if (url.includes("article/citation")) return "journalArticle";
+	else if (getSearchResults(doc, true)) return "multiple";
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a.title-link');
+	for (let row of rows) {
+		let href = '/article/citation/' + row.getAttribute('data-title');
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function scrape(doc, url) {
+	var id = url.match(/citation\/(\d+)/)[1];
+	var token = ZU.xpathText(doc, '(//input[@name="csrf_token"])[1]/@value');
+	var post = "csrf_token=" + token + "&articles=" + id;
+	var exportURL = "/article/export_for_endnote/";
+	var abstract = ZU.xpathText(doc, '//div[@class="container full-citation"]//table//th[contains(text(), "Abstract")]/following-sibling::td');
+	ZU.doPost(exportURL, post, function (text) {
+		var translator = Zotero.loadTranslator("import");
+		// Calling the RIS translator
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(text);
+		translator.setHandler("itemDone", function (obj, item) {
+			item.notes = [];
+			if (abstract) {
+				item.abstractNote = abstract.replace(/\t+Abstract (reproduced|published) by .*/, "").trim();
+			}
+			item.attachments = [{
+				document: doc,
+				title: "Snapshot"
+			}];
+			item.complete();
+		});
+		translator.translate();
+	});
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}

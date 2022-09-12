@@ -1,0 +1,192 @@
+function detectWeb(doc, url) {
+	if (url.includes('/search')) {
+		if (getSearchResults(doc, true)) {
+			return "multiple";
+		}
+		else {
+			Z.monitorDOMChanges(doc.querySelector('app-search'));
+		}
+	}
+	else if (url.includes('/citations/')) {
+		return mapType(
+			ZU.xpathText(doc,
+				'//div[@class="label" and contains(text(), "Document Type")]/following-sibling::div/text()'));
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('app-record-item mat-card-title a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) return;
+			for (let url of Object.keys(items)) {
+				// don't bother fetching the doc, it's useless
+				scrape(null, url);
+			}
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function mapType(docType) {
+	if (!docType) return false;
+	
+	docType = docType.trim().toLowerCase();
+
+	let mapping = {
+		'conference paper|conference publication': 'conferencePaper',
+		'bibliograph(y|ic)|report|collected works|brief|memo|note|white paper': 'report',
+		'journal (article|issue)|^reprint': 'journalArticle',
+		'presentation|poster': 'presentation',
+		'thesis|dissertation': 'thesis',
+		chapter: 'bookSection',
+		'book/monograph|conference proceedings': 'book',
+		patent: 'patent',
+		'computer program': 'computerProgram',
+		'motion picture|video': 'videoRecording',
+		'preprint|manuscript': 'manuscript'
+	};
+
+	for (let [regex, itemType] of Object.entries(mapping)) {
+		if (docType.match(new RegExp(regex))) {
+			return itemType;
+		}
+	}
+
+	return 'document';
+}
+
+function processJSON(json) {
+	let item = new Zotero.Item(mapType(json.stiTypeDetails || json.stiType));
+	
+	function addToExtra(label, value) {
+		if (item.extra == undefined) item.extra = '';
+		item.extra += `NTRS ${label}: ${value}\n`;
+	}
+	
+	item.title = json.title;
+	
+	if (json.sourceIdentifiers) {
+		for (let identifier of json.sourceIdentifiers) {
+			if (identifier.type == 'DOI') {
+				item.DOI = ZU.cleanDOI(identifier.number);
+				break;
+			}
+		}
+	}
+	
+	if (json.downloads) {
+		for (let download of json.downloads) {
+			item.attachments.push({
+				url: download.links.pdf || download.links.original,
+				title: download.name,
+				mimeType: download.mimetype
+			});
+		}
+	}
+	
+	if (json.authorAffiliations) {
+		let affiliations = [];
+		
+		for (let entry of json.authorAffiliations) {
+			let name = entry.meta.author.name;
+			item.creators.push(ZU.cleanAuthor(name, 'author', name.includes(', ')));
+			affiliations.push(entry.meta.organization.name);
+		}
+		
+		if (affiliations.length) {
+			affiliations = ZU.arrayUnique(affiliations);
+			addToExtra('Author Affiliations', affiliations.join(', '));
+		}
+	}
+	
+	if (json.subjectCategories) {
+		for (let subjectCategory of json.subjectCategories) {
+			item.tags.push({ tag: subjectCategory });
+		}
+	}
+	
+	if (json.publications && json.publications.length) {
+		let earliest;
+		for (let publication of json.publications) {
+			// we're comparing +00:00 ISO dates here, so string comparison
+			// *should* be safe. either way i've never seen an item with more
+			// than one publication in this database.
+			if (!earliest || publication.publicationDate < earliest.publicationDate) {
+				earliest = publication;
+			}
+		}
+		
+		item.date = ZU.strToISO(earliest.publicationDate);
+		if (item.itemType == 'journalArticle') {
+			item.publicationTitle = earliest.publicationName;
+			item.volume = earliest.volume;
+			item.issue = earliest.issue;
+		}
+	}
+	
+	if (json.meetings && json.meetings.length) {
+		let meeting = json.meetings[0];
+		if (item.itemType == 'conferencePaper') {
+			item.conferenceName = meeting.name;
+			item.place = meeting.location;
+		}
+		else if (meeting.startDate && meeting.endDate) {
+			let start = meeting.startDate.substring(0, 10);
+			let end = meeting.endDate.substring(0, 10);
+			addToExtra('Meeting Information', `${meeting.name}; ${start} to ${end}; ${meeting.place}`);
+		}
+	}
+	
+	if (json.otherReportNumbers && json.otherReportNumbers.length) {
+		if (item.itemType == 'report') {
+			item.reportNumber = json.otherReportNumbers[0];
+		}
+		else {
+			addToExtra('Report/Patent Number', json.otherReportNumbers[0]);
+		}
+	}
+	
+	if (json.abstract != 'No abstract available') {
+		item.abstractNote = json.abstract;
+	}
+	
+	if (json.id) {
+		addToExtra('Document ID', json.id);
+	}
+	
+	if (json.center) {
+		addToExtra('Research Center', `${json.center.name} (${json.center.code})`);
+	}
+	
+	return item;
+}
+
+function scrape(doc, url) {
+	ZU.doGet(url.replace('/citations', '/api/citations'), function (text) {
+		let json = JSON.parse(text);
+		let item = processJSON(json);
+		item.url = url;
+		if (doc) {
+			item.attachments.push({ title: "Snapshot", document: doc });
+		}
+		item.complete();
+	});
+}

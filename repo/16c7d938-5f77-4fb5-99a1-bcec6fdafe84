@@ -1,0 +1,104 @@
+function detectWeb(doc, url) {
+	if (url.indexOf('/dienste/vernetzung/')>-1) {
+		if (getSearchResults(doc, true)) {
+			return "multiple";
+		} else {
+			return "case";
+		}
+	} else if (url.indexOf('/gesetze/')>-1 && url.indexOf('.html')>-1) {
+		return "statute";
+	}
+}
+
+
+//We only handle the cases that there are multiple cases on the
+//same pages in multiples.
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var itemsDoc = [];
+	var found = 0;
+	var rows = ZU.xpath(doc, '//div[contains(@class, "rspr_inhalt")]');
+	for (var i=0; i<rows.length; i++) {
+		var title = ZU.xpathText(rows[i], './/td[contains(@class, "urteilszeile")]');
+		if (!title) continue;
+		found++;
+		items[i] = title;
+		itemsDoc[i] = rows[i];
+	}
+	if (checkOnly) {
+		if (found>1) {
+			return true;
+		} else {
+			return false;
+		}
+	}
+	return found ? [items, itemsDoc] : false;
+}
+
+
+function doWeb(doc, url) {
+	var type = detectWeb(doc, url);
+	if (type == "multiple") {
+		var results = getSearchResults(doc, false);
+		Zotero.selectItems(results[0], function (items) {
+			if (!items) {
+				return true;
+			}
+			for (var i in items) {
+				scrape(results[1][i], url, "case");
+			}
+		});
+	} else {
+		scrape(doc, url, type);
+	}
+}
+
+
+function scrape(doc, url, type) {
+	var item = new Zotero.Item(type);
+	
+	if (type == "case") {
+		var headline = ZU.xpathText(doc, './/td[contains(@class, "urteilszeile")]');
+		var posComma = headline.indexOf(",");
+		var posDash = headline.indexOf("-");
+		if (posComma>0) {
+			item.court = headline.substr(0, posComma);
+		}
+		if (posDash > 0) {
+			item.docketNumber = headline.substr(posDash+2);
+		}
+		item.dateDecided = ZU.strToISO(headline);
+		item.title = headline;
+		
+		var previousDecisions = ZU.xpath(doc, './/div[h4[contains(., "Verfahrensgang")]]/ul/li');
+		item.history = previousDecisions.map(function(li) { return li.textContent; } ).join("; ");
+		
+	}
+	if (type == "statute") {
+		var headings = ZU.xpath(doc, "//h1/text()");
+		//e.g. <h1>§ 12 <br/> Abberufung von ... </h1>
+		if (headings.length == 2) {
+			item.codeNumber = headings[0].textContent;
+			item.title = headings[1].textContent;
+		}
+		item.code = doc.getElementById("gesetzesname").textContent;
+		item.section = ZU.xpathText(doc, '//table[contains(@class, "gesetzesgliederung")]');
+		if (item.section) {
+			item.section = ZU.trimInternal(item.section).replace(' ,', ',');
+		}
+		item.shortTitle = ZU.xpathText(doc, '//div[contains(@class, "funktion_beobachten")]/label');
+		if (item.shortTitle) {
+			item.shortTitle = item.shortTitle.replace("auf Ihre Merkliste setzen", "");
+		}
+		if (!item.title) {
+			item.title = item.shortTitle;
+		}
+	}
+	
+	item.attachments.push({
+		title: "Snapshot",
+		document: doc
+	});
+	
+	item.complete();
+}

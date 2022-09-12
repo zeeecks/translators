@@ -1,0 +1,75 @@
+function detectWeb(doc, url) {
+	if ((url.indexOf("search?q") != -1 || url.indexOf("/browse") != -1 || url.indexOf("/categories/") != -1) && getSearchResults(doc, true)) {
+		return "multiple";
+	} else if (url.indexOf("/article") != -1) {
+		//no great item type here - switch once we have dataset.
+		return "document";
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+		var items = new Object();
+		var found = false;
+		//skip collections here
+		var titles = ZU.xpath(doc, '//div[@class="item-title" and not(contains(@href, "/collections/"))]');
+		//Z.debug(titles.length)
+		for (var i = 0; i<titles.length; i++) {
+			//.href does not work -- can't quite follow why but appears related to path depths
+			var href = ZU.xpathText(titles[i], './@href');
+			var title = titles[i].textContent;
+	 		if (!href || !title) continue;
+			if (checkOnly) return true;
+			found = true;
+			items[href] = title;
+		}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var arts = new Array();
+			for (var i in items) {
+				arts.push(i);
+			}
+			ZU.processDocuments(arts, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var risURL = ZU.xpathText(doc, '//div[@class="exports-wrap section"]/div/a[contains(text(), "Ref. manager")]/@href');
+	//Z.debug(risURL)
+	ZU.HTTP.doGet(risURL, function (text) {
+		//Z.debug(text)
+		text = text.trim()
+		text = text.replace(/L4 - .+/g, "");
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(text);
+		translator.setHandler("itemDone", function (obj, item) {
+			//Authors are firstName LastName - fix
+			for (i = 0; i<item.creators.length; i++) {
+				//sometimes there _is_ a comma delimiter
+				if (!item.creators[i].firstName) {
+					item.creators[i] = ZU.cleanAuthor(item.creators[i].lastName, "author");
+				}
+			}
+			//Remove period at end of title
+			item.title = item.title.replace(/\.\s*$/, "");
+			item.attachments.push({
+				document: doc,
+				title: "Figshare Snapshot",
+				mimeType: "text/html"
+			});
+			
+			item.complete();
+		});
+		translator.translate();
+	});
+}

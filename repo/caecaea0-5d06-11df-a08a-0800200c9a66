@@ -1,0 +1,120 @@
+function detectWeb(doc, url) {
+	if (url.includes("/story/")) {
+		return "newspaperArticle";
+	} else if (url.includes("letemps.ch") && ZU.xpathText(doc, '//meta[@property="og:type"]/@content')) {
+		return "newspaperArticle";
+	} else if (url.includes("suche.html?") && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//div[@id="panelArticleItems"]//h3/a[contains(@href, "/story/")]');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	//translator.setDocument(doc);
+
+	translator.setHandler('itemDone', function (obj, item) {
+		
+		
+		var authors = ZU.xpath(doc, '//div[@id="mainColLeft"]//div[contains(@class, "storyInfo")]/span[contains(@class, "author")]/a[1]');
+		if (!authors || authors.length===0) authors = ZU.xpath(doc, '//div[@id="mainColLeft"]//div[contains(@class, "storyInfo")]/span[contains(@class, "author")]');
+		if (!authors || authors.length===0) authors = ZU.xpath(doc, '(//section[contains(@class, "article-info")])[1]//a[contains(@class, "article-author")]');
+		if (authors) {
+			for (let i=0; i<authors.length; i++) {
+				// Delete "Par" = From in authors name
+				let author = authors[i].textContent.replace(/^Par /, '');
+				item.creators.push(ZU.cleanAuthor(author, "author"));
+			}
+		}
+		
+		var date = ZU.xpathText(doc, '//div[@id="mainColLeft"]//div[contains(@class, "storyInfo")]/time/span') ||
+			ZU.xpathText(doc, '//div[@id="mainColLeft"]//div[contains(@class, "storyInfo")]/time');
+		if (date) {
+			item.date = ZU.strToISO(date);
+		}
+		
+		item.section = ZU.xpathText(doc, '//div[@id="mainNav"]/ul/li/a[contains(@class, "active")]');
+		
+		var newspaperName = ZU.xpathText(doc, '(//img[@id="mainLogo"]/@alt)[1]');
+		if (newspaperName) {
+			item.publicationTitle = newspaperName;
+		}
+		
+		if (url.includes("24heures.ch")
+			|| url.includes("lematin.ch")
+			|| url.includes("tdg.ch")
+			|| url.includes("letemps.ch")) {
+				item.language = "fr";
+		} else {
+			item.language = "de";
+		}
+		
+		if (item.url && item.url.slice(0,2) == "//") {
+			item.url = "https:" + item.url;
+		}
+		
+		item.ISSN = issnMapping(url);
+		
+		var tags = ZU.xpath(doc, '//span[contains(@class, "tagWrapper")]');
+		if (tags) {
+			for (let i=0; i<tags.length; i++) {
+				item.tags.push(tags[i].textContent.trim());
+			}
+		}
+		
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function(trans) {
+		trans.itemType = "newspaperArticle";
+		trans.doWeb(doc, url);
+	});
+}
+
+
+function issnMapping(url) {
+	if (url.includes("tagesanzeiger.ch")) return "1422-9994";
+	if (url.includes("bernerzeitung.ch")) return "1424-1021";
+	if (url.includes("bazonline.ch")) return "1420-3006";
+	if (url.includes("derbund.ch")) return "0774-6156";
+	if (url.includes("lematin.ch")) return "1018-3736";
+	if (url.includes("24heures.ch")) return "1424-4039";
+	if (url.includes("tdg.ch")) return "1010-2248";
+	if (url.includes("letemps.ch")) return "1423-3967";
+}

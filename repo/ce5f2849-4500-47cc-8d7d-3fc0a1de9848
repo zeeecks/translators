@@ -1,0 +1,86 @@
+function detectWeb(doc, url) {
+	if ( url.search(/\/content\/journal\/\w+\/10\./) >-1) {
+		//e.g. http://jmm.microbiologyresearch.org/content/journal/jmm/10.1099/00222615-15-2-189
+		return "journalArticle";
+	}
+	if (getSearchResults(doc, true)) {
+		//e.g. http://ijs.microbiologyresearch.org/content/journal/ijsem/65/11
+		//http://jmm.microbiologyresearch.org/search?option1=author&noRedirect=true&value1=Ateequr+Rehman&facetOptions=2&facetNames=pub_author_facet&operator2=AND&option2=pub_author_facet&value2=%27Patricia+Lepage%27
+		return "multiple";
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//li[contains(@class, "list-group-item")]//h4/a');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = new Array();
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var risURL;
+	var node = ZU.xpath(doc, '//ul[@id="export-list"]/li/a[contains(@title,"RefWorks")]');
+	if (node.length > 0) {
+		risURL = node[0].href;
+	} else {
+		// Trim query string and hash
+		url = url.replace(/(\?.*)?(#.*)?$/, '');
+		risURL = url + "/cite/refworks";
+	}
+
+	ZU.doGet(risURL, function(text) {
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("1a3506da-a303-4b0a-a1cd-f216e6138d86");
+		translator.setString(text);
+		translator.setHandler("itemDone", function(obj, item) {
+			var pdfURL = ZU.xpathText(doc, '//div[contains(@class,"textoptionsFulltext")]//a[contains(@class,"pdf")]/@href');
+			if (pdfURL) {
+				item.attachments.push({
+					url: pdfURL,
+					title: "Full Text PDF",
+					mimeType: "application/pdf"
+				});
+			}
+			item.attachments.push({
+				title: "Snapshot",
+				document: doc
+			});
+			// Some JF fields have trailing commas
+			if (item.publicationTitle) {
+				item.publicationTitle = item.publicationTitle.replace(/,$/, '');
+			}
+			var abstract = ZU.xpath(doc,'//div[contains(@class, "abstract")]//div[contains(@class,"article-container")]');
+			if (abstract.length > 0) {
+				item.abstractNote = abstract[0].textContent.replace(/^\s*Summary/, '').trim();
+			}
+			item.complete();
+		})
+		translator.translate();
+	})
+}

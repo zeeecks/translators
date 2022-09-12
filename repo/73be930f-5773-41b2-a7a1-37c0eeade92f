@@ -1,0 +1,148 @@
+/*
+	OZON.ru Translator
+	Copyright (C) 2015 Mikhail Akimov
+	Copyright (C) 2017 Philipp Zumstein
+
+	This program is free software: you can redistribute it and/or modify
+	it under the terms of the GNU Affero General Public License as published by
+	the Free Software Foundation, either version 3 of the License, or
+	(at your option) any later version.
+
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+	GNU Affero General Public License for more details.
+
+	You should have received a copy of the GNU Affero General Public License
+	along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+function detectWeb(doc, url) {
+	if (ZU.xpathText(doc, '//div[contains(@class, "bContentColumn")]/script[contains(., "Core.Namespace.exp")]')) {
+		return "book";
+	} else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//a[@itemprop="url" and contains(@href, "/context/detail/id/")]');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var script = ZU.xpathText(doc, '//div[contains(@class, "bContentColumn")]/script[contains(., "Core.Namespace.exp")]');
+	var start = script.indexOf('{');
+	var end = script.lastIndexOf('}');
+	var data = script.substring(start, end+1);
+	var json = JSON.parse(data);
+	//Z.debug(json.Capabilities.Capabilities);
+	
+	var item = new Zotero.Item('book');
+	item.title = json.NameVm.Name;
+	
+	for (var property in json.Capabilities.Capabilities) {
+		var name = json.Capabilities.Capabilities[property].Name;
+		var value = json.Capabilities.Capabilities[property].Value;//this can be either a text string or an array of values (e.g. publisher, authors)
+		var role = null;
+		
+		switch (name) {
+			//All creatorss are handled the same except that the role
+			//depends on the label and therefore depending on the
+			//entrypoint of these cases:
+			case "Редактор":
+			case "Редакторы":
+				if (!role) role = "editor";
+			case "Переводчик":
+			case "Переводчики":
+				if (!role) role = "translator";
+			case "Автор":
+			case "Авторы":
+				if (!role) role = "author";
+				for (var i=0; i<value.length; i++) {
+					item.creators.push(ZU.cleanAuthor(value[i].Text, role));
+				}
+				break;
+			case "Год выпуска":
+				item.date = getValue(value);
+				break;
+			case "Издательства":
+			case "Издательство":
+				item.publisher = getValue(value);
+				break;
+			case "ISBN":
+				item.ISBN = getValue(value);
+				break;
+			case "Язык издания":
+				item.language = getValue(value, true);
+				break;
+			case "Количество страниц":
+				item.numPages = getValue(value);
+				break;
+			case "Серия":
+				item.series = getValue(value);
+		}
+	}
+	
+	if (json.Description && json.Description.FirstBlock) {
+		item.abstractNote = ZU.cleanTags(json.Description.FirstBlock.Text);
+	}
+	
+	item.complete();
+}
+
+
+function getValue(jsonSnippet, normalize) {
+	var codes = {
+		'русский': 'ru',
+		'английский': 'en',
+		'французский': 'fr',
+		'немецкий': 'de',
+		'итальянский': 'it',
+		'испанский': 'es'
+	};
+
+	if (Array.isArray(jsonSnippet)) {
+		return jsonSnippet.map(function(obj) { return obj.Text; }).join(", ");
+	}
+	
+	if (normalize) {
+		var t = jsonSnippet = jsonSnippet.trim().toLowerCase();Z.debug(t);
+		if (codes[t]) {
+			return codes[t];
+		}
+	}
+	return jsonSnippet
+	
+}

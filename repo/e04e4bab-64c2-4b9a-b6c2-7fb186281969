@@ -1,0 +1,85 @@
+function detectWeb(doc, url) {
+	if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	else if (doc.querySelectorAll('a.icon-export')) {
+		let pubType = text(doc, 'a[href*="&publication_type="]');
+		switch (pubType.trim()) {
+			case 'Article in journal':
+				return 'journalArticle';
+			default:
+				return 'book';
+		}
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.result a.title');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let risURL = attr(doc, 'a.icon-export', 'href');
+	let body = 'export_filename=export.ris&export_type=download&export_format=ris';
+	
+	ZU.doPost(risURL, body, function (risText) {
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(risText);
+		translator.setHandler("itemDone", function (obj, item) {
+			delete item.archive;
+			item.libraryCatalog = "L'Année Philologique";
+			
+			addAttachment(item, doc);
+			
+			item.complete();
+		});
+		translator.translate();
+	});
+}
+
+function addAttachment(item, doc) {
+	// no meaningful classes or IDs here, so we'll crawl manually.
+	// it's easier than XPath!
+	for (let link of doc.querySelectorAll('table li a')) {
+		// "(Full text)" is the label across languages
+		if (link.nextSibling && link.nextSibling.textContent.includes('(Full text)')) {
+			if (link.href.endsWith('.pdf')) {
+				item.attachments.push({
+					title: 'Full Text PDF',
+					mimeType: 'application/pdf',
+					url: link.href
+				});
+			}
+			else {
+				item.attachments.push({
+					title: 'Full Text Source',
+					mimeType: 'text/html',
+					url: link.href
+				});
+			}
+		}
+	}
+}

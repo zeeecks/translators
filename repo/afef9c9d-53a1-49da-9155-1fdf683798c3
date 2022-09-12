@@ -1,0 +1,136 @@
+function detectWeb(doc, url) {
+	if (url.includes('/release/') && !url.includes('/search') && doc.querySelector('meta[name="citation_title"]')) {
+		return guessType(doc);
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function guessType(doc) {
+	// Fatcat types are based on CSL types, with some extensions
+	// https://guide.fatcat.wiki/entity_release.html#release_type-vocabulary
+	
+	let dcType = attr(doc, 'meta[name="DC.type"]', 'content');
+	switch (dcType) {
+		case 'article-magazine':
+			return 'magazineArticle';
+		case 'book':
+			return 'book';
+		case 'chapter':
+			return 'bookSection';
+		case 'entry':
+			return 'webpage';
+		case 'entry-encyclopedia':
+			return 'encyclopediaArticle';
+		case 'manuscript':
+			return 'manuscript';
+		case 'paper-conference':
+			return 'conferencePaper';
+		case 'patent':
+			return 'patent';
+		case 'report':
+			return 'report';
+		case 'dataset':
+			return 'document';
+		case 'letter':
+			return 'letter';
+		case 'post':
+		case 'post-weblog':
+			return 'blogPost';
+		case 'software':
+			return 'computerProgram';
+		case 'speech':
+			return 'presentation';
+		case 'thesis':
+			return 'thesis';
+		default:
+			return 'journalArticle';
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('h4 a[href*="/release/"], td > b > a[href*="/release/"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+
+	translator.setHandler('itemDone', function (obj, item) {
+		item.itemType = guessType(doc); // needs to be told twice sometimes
+		
+		// attachment URLs go to the archive.org frame page, not directly to
+		// the PDF
+		for (let attachment of item.attachments) {
+			if (attachment.url
+				&& attachment.url.startsWith('https://web.archive.org/web/')) {
+				// lots of specificity needed here because the original page URL
+				// could be anything
+				attachment.url = attachment.url
+					.replace(/^(https:\/\/web\.archive\.org\/web\/\d+)/, '$1if_');
+			}
+		}
+		
+		item.url = attr(doc, 'a.huge.black.button', 'href');
+
+		for (let field in item) {
+			if (item.hasOwnProperty(field) && item[field] === 'None') {
+				delete item[field];
+			}
+		}
+		
+		let id = text(doc, 'h1.header code');
+		item.extra = (item.extra ? item.extra + '\n' : '') + 'Fatcat ID: ' + id + '\n';
+		
+		if (item.itemType == 'blogPost') {
+			delete item.websiteType; // "post"
+			item.blogTitle = item.publisher;
+		}
+		
+		if (item.publicationTitle && item.seriesTitle
+			&& item.publicationTitle == item.seriesTitle
+			&& ZU.fieldIsValidForType('publicationTitle', item.itemType)) {
+			delete item.seriesTitle;
+		}
+		
+		// we could handle special cases for every possible item type,
+		// but in practice it's about 90% papers, 5% blog posts, 5% everything else
+		
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = guessType(doc);
+		trans.addCustomFields({
+			'citation_journal_title': 'seriesTitle',
+			'citation_first_page': 'pages',
+			'citation_volume': 'reportNumber'
+		});
+		trans.doWeb(doc, url);
+	});
+}

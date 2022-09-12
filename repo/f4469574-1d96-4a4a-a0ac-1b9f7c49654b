@@ -1,0 +1,127 @@
+function detectWeb(doc, url) {
+	if (url.indexOf("?feldname") != -1) return "multiple";
+	else return itemType(doc);
+}
+
+function associateData(newItem, dataTags, field, zoteroField) {
+	if (dataTags[field]) {
+		newItem[zoteroField] = dataTags[field];
+	}
+}
+
+function itemType(doc) {
+	var type;
+	if (type = ZU.xpathText(doc, '//form/dl/dt[contains(text(), "Dokumenttyp:")]/following-sibling::dd[1]')) {
+		type = type.replace(/[;,].+/, "").trim();
+	}
+	if (typeMap[type]) return typeMap[type];
+	else return "book";
+}
+
+var typeMap = {
+	"Bücher": "book",
+	"Zeitschriftenaufsatz": "journalArticle",
+	"Sammelwerksbeitrag": "bookSection",
+	"Filme": "film",
+	"andere": "report"
+}
+
+function scrape(doc, url) {
+		var dataTags = new Object();
+		var newItem = new Zotero.Item(itemType(doc));
+		var datalabel = ZU.xpath(doc, '//form/dl/dt');
+		var data = ZU.xpath(doc, '//form/dl/dd');
+		for (var i in datalabel) {
+			var fieldTitle = datalabel[i].textContent.trim();
+			var fieldContent = data[i].textContent;
+			//Z.debug(fieldTitle + " " + fieldContent)
+			if (fieldTitle.indexOf("Quelle") != -1) {
+				var date = fieldContent.match(/\((\d{4})\)/);
+				if (date) newItem.date = date[1];
+				if (newItem.itemType === "journalArticle") {
+					var publication = fieldContent.match(/^(.+?),/);
+					if (publication) newItem.publicationTitle = publication[1];
+					var pages = fieldContent.match(/S\.\s*([\d-]+)/);
+					if (pages) newItem.pages = pages[1];
+					var volume = fieldContent.match(/,\s*(\d+)/);
+					if (volume) newItem.volume = volume[1];
+					//the issue is sometimes before, sometimes after the year
+					var issue = fieldContent.match(/\)\s*(\d+)\s*,|,[\d\s]*,\s*(\d+)/);
+					if (issue) {
+						if (issue[1]) newItem.issue = issue[1];
+						else newItem.issue = issue[2];
+					}
+				}
+				if (newItem.itemType === "book") {
+					var publisher = fieldContent.match(/^.+?:\s*(\w+)/);
+					if (publisher) newItem.publisher = publisher[1];
+					var place = fieldContent.match(/^\s*(.+?):/);
+					if (place) newItem.place = place[1];
+					var numpages = fieldContent.match(/(\d+)\s*S/);
+					if (numpages) newItem.numPages = numpages[1];
+
+				}
+				if (newItem.itemType === "bookSection") {
+					var pages = fieldContent.match(/S\.\s*([\d-]+)/);
+					if (pages) newItem.pages = pages[1];
+				}
+			}
+			if (fieldTitle.indexOf("Autoren") != -1) {
+				var authors = fieldContent.split(/\s*;\s*/);
+				for (var i in authors) {
+					//get editors
+					var authortype = "author";
+					if (authors[i].match(/Hrsg/)) {
+						authortype = "editor";
+						authors[i] = authors[i].replace(/[\(\[]Hrsg\.[\)\]]/, "").trim();
+					}
+					newItem.creators.push(ZU.cleanAuthor(authors[i], authortype, true));
+
+				}
+			}
+			if (fieldTitle.indexOf("ISBN:")!=-1){
+				newItem.ISBN = fieldContent.match(/[\d\-]+/)[0];
+			}
+			if (fieldTitle.indexOf("Schlagworte") != -1) {
+				var tags = fieldContent.split(/\s*;\s*/);
+				for (var i in tags) {
+					newItem.tags.push(tags[i].trim())
+				}
+			} else {
+				dataTags[fieldTitle] = fieldContent;
+			}
+
+		}
+		associateData(newItem, dataTags, "Titel:", "title");
+		associateData(newItem, dataTags, "Abstract:", "abstractNote");
+		associateData(newItem, dataTags, "Sprache:", "language");
+		associateData(newItem, dataTags, "Link zum Volltext:", "url");
+		associateData(newItem, dataTags, "Reihe:", "series");
+		newItem.complete();
+	}
+
+	function doWeb(doc, url) {
+		var articles = new Array();
+
+		if (detectWeb(doc, url) == "multiple") {
+			var items = new Object();
+
+			var titles = doc.evaluate('//form/dl[contains(@class, "trefferliste")]/dd/a', doc, null, XPathResult.ANY_TYPE, null);
+
+			var next_title;
+			while (next_title = titles.iterateNext()) {
+				items[next_title.href] = next_title.textContent;
+			}
+			Zotero.selectItems(items, function (items) {
+				if (!items) {
+					return true;
+				}
+				for (var i in items) {
+					articles.push(i);
+				}
+				Zotero.Utilities.processDocuments(articles, scrape, function () {});
+			});
+		} else {
+			scrape(doc, url);
+		}
+	}

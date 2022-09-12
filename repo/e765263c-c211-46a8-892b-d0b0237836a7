@@ -1,0 +1,33 @@
+function detectWeb(doc, url) { return FW.detectWeb(doc, url); }
+function doWeb(doc, url) { return FW.doWeb(doc, url); }
+ 
+FW.Scraper({
+itemType         : 'blogPost',
+detect           : FW.Url().match(/\/\d{4}\/\d{2}\//),
+title            : FW.Xpath('//h1[@class="entry-title"]').text(),
+attachments      : [{ url: FW.Url(),
+  title:  "ARTnews snapshot",
+  type: "text/html" }],
+creators         : FW.Xpath('//span[@class="author-meta-name"]/a').text().cleanAuthor("author"),
+date             : FW.Xpath('//span[@class="date-meta"]').text().replace(/(\d{2})\/(\d{2})\/(\d{2})/, "20$3-$1-$2,"), // "03/02/16 10:35 am" => 2017-03-02, 10:35 pm
+blogTitle        : "ARTnews",
+language         : "en-US",
+abstractNote     : FW.Xpath('//meta[@name="description"]/@content').text(),
+tags             : FW.Xpath('//span[@class="cat-links"]/a').text(),
+hooks : { "scraperDone": function  (item,doc,url) {
+	if (item.creators[0].lastName == "ARTnews") {
+		delete item.creators[0].firstName;
+		item.creators[0].lastName = "The Editors of ARTnews";
+		item.creators[0].fieldMode = 1;
+	}
+}}
+});
+
+FW.MultiScraper({
+itemType         : 'multiple',
+detect           : FW.Url().match(/(\/category\/)|(\/\?s=)/), // category or search
+choices          : {
+  titles  :  FW.Xpath('//h2[@class="entry-title"]/a').text(),
+  urls    :  FW.Xpath('//h2[@class="entry-title"]/a').key("href").trim()
+  }
+});

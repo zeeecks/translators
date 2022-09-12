@@ -1,0 +1,165 @@
+// attr()/text() v2
+// eslint-disable-next-line
+function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null;}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null;}
+
+function detectWeb(doc, url) {
+	// ensure that we only detect where scrape will (most likely) work
+	if (url.includes('/content/doi/') && (url.search(/\/(10\.[^#?/]+\/[^#?/]+)\//) != -1 || url.includes("/full"))) {
+		if (attr(doc, 'meta[name="dc.Type"]', 'content') == "book-part") {
+			return "bookSection";
+		}
+		else return "journalArticle";
+	}
+	else if (getSearchResults(doc, url, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+
+function getSearchResults(doc, url, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows;
+	if (url.includes("insight/search?")) {
+		// search results
+		rows = doc.querySelectorAll('h2>a.intent_link');
+	}
+	else {
+		// journal issue or books,
+		rows = doc.querySelectorAll('.intent_issue_item h4>a, li.intent_book_chapter>a');
+	}
+	for (let i = 0; i < rows.length; i++) {
+		let href = rows[i].href;
+		let title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, url, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var DOI = url.match(/\/(10\.[^#?/]+\/[^#?/]+)\//);
+	var risURL;
+	if (DOI) {
+		risURL = "/insight/content/doi/" + DOI[1] + "/full/ris";
+	}
+	else {
+		Z.debug("can't find DOI, trying alternative approach for risURL");
+		risURL = url.replace(/\/full.*/, "/full/ris");
+	}
+	// Z.debug(risURL);
+	
+	var pdfURL;
+	// make this works on PDF pages
+	if (url.includes("full/pdf?")) {
+		pdfURL = url;
+	}
+	else {
+		pdfURL = attr(doc, 'a.intent_pdf_link', 'href');
+	}
+
+	// Z.debug("pdfURL: " + pdfURL);
+	ZU.doGet(risURL, function (response) {
+		// they number authors in their RIS...
+		response = response.replace(/A\d+\s+-/g, "AU  -");
+
+		var abstract = doc.getElementById('abstract');
+		var translator = Zotero.loadTranslator("import");
+		var tags = doc.querySelectorAll('li .intent_text');
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(response);
+		translator.setHandler("itemDone", function (obj, item) {
+			if (pdfURL) {
+				item.attachments.push({
+					url: pdfURL,
+					title: "Full Text PDF",
+					mimeType: "application/pdf"
+				});
+			}
+			else {
+				item.attachments.push({
+					title: "Snapshot",
+					document: doc
+				});
+			}
+			
+			for (let tag of tags) {
+				item.tags.push(tag.textContent);
+			}
+			
+			var authorsNodes = doc.querySelectorAll("div > a.contrib-search");
+			if (authorsNodes.length > 0) {
+				// prefer the authors information from the website as it contains the last and first name separately
+				// where the RIS data does not separate them correctly (it uses a space instead of comma)
+				// but the editors are only part of the RIS data
+				var authors = [];
+				for (let author of authorsNodes) {
+					authors.push({
+						firstName: text(author, "span.given-names"),
+						lastName: text(author, "span.surname"),
+						creatorType: "author"
+					});
+				}
+				var otherContributors = item.creators.filter(creator => creator.creatorType !== "author");
+				item.creators = otherContributors.length !== 0 ? authors.concat(separateNames(otherContributors)) : authors;
+			}
+			else {
+				Z.debug("No tags available for authors");
+				item.creators = separateNames(item.creators);
+			}
+
+			if (item.date) {
+				item.date = ZU.strToISO(item.date);
+			}
+			if (abstract) {
+				item.abstractNote = ZU.trimInternal(abstract.textContent).replace(/^Abstract\s*/, "");
+			}
+			item.complete();
+		});
+		translator.translate();
+	});
+}
+
+function separateNames(creators) {
+	for (let i = 0; i < creators.length; i++) {
+		var lastName = creators[i].lastName.split(" ");
+		// Only authors are in the format lastname firstname in RIS
+		// Other creators are firstname lastname
+		if (!creators[i].firstName && lastName.length > 1) {
+			if (creators[i].creatorType === "author") {
+				creators[i].firstName = lastName.slice(1).join(" ");
+				creators[i].lastName = lastName[0];
+			}
+			else {
+				creators[i].firstName = lastName[0];
+				creators[i].lastName = lastName.slice(1).join(" ");
+			}
+			delete creators[i].fieldMode;
+		}
+		delete creators[i].fieldMode;
+	}
+	return creators;
+}

@@ -1,0 +1,93 @@
+function detectWeb(doc, _url) {
+	if (doc.querySelector('#aiBriefBox')) {
+		return "report";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.reporttitle a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item('report');
+	
+	item.title = filterTagsInHTML(
+		doc.querySelector('div.page-title > *:last-child').innerHTML
+			.replace('&nbsp;', ' ')
+			.replace(/<em>/g, '<i>')
+			.replace(/<\/em>/g, '</i>')
+			.replace(/<strong>/, '<b>')
+			.replace(/<\/strong>/, '</b>'), 'i, b');
+	item.abstractNote = text(doc, '#exec-summary p');
+	item.reportNumber = text(doc, '#NTSBNumber')
+		.replace('NTSB Number:', '')
+		.trim();
+	item.reportType = 'Accident report';
+	item.institution = 'National Transportation Safety Board';
+	item.date = ZU.strToISO(text(doc, '#AdoptedDate'));
+	item.language = 'en';
+	item.url = url;
+	
+	let pdfURL = attr(doc, '#FullReportDiv .link-item a', 'href');
+	if (pdfURL) {
+		item.attachments.push({
+			title: 'Full Text PDF',
+			mimeType: 'application/pdf',
+			url: pdfURL
+		});
+	}
+	
+	item.complete();
+}
+
+function filterTagsInHTML(html, allowSelector) {
+	let elem = new DOMParser().parseFromString(html, 'text/html');
+	filterTags(elem.body, allowSelector);
+	return elem.body.innerHTML;
+}
+
+function filterTags(root, allowSelector) {
+	for (let node of root.childNodes) {
+		if (!node.tagName) {
+			continue;
+		}
+		
+		if (node.matches(allowSelector)) {
+			filterTags(node, allowSelector);
+		}
+		else {
+			while (node.firstChild) {
+				let firstChild = node.firstChild;
+				node.parentNode.insertBefore(firstChild, node);
+				filterTags(firstChild, allowSelector);
+			}
+			node.remove();
+		}
+	}
+}

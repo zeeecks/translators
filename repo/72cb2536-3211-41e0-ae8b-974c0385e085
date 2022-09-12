@@ -1,0 +1,135 @@
+function detectWeb(doc, url) {
+	if (url.includes('/navigate/')) {
+		return "encyclopediaArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.philologic_cite .citation:first-child a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	let path = url.match(/(\/philologic4\/[^/]+\/)navigate((?:\/\d+)+)/);
+	if (!path) {
+		throw new Error('Unknown entry path format');
+	}
+	
+	let [, base, id] = path;
+	id = id.replace(/\//g, ' ').trim();
+	
+	ZU.doGet(
+		`${base}reports/navigation.py?report=navigation&philo_id=${id}&byte=`,
+		function (respText) {
+			let json = JSON.parse(respText);
+			scrapeFromJSON(doc, url, json);
+		}
+	);
+}
+
+function scrapeFromJSON(doc, url, json) {
+	let item = new Zotero.Item('encyclopediaArticle');
+	let meta = json.metadata_fields;
+
+	item.title = meta.head;
+	item.encyclopediaTitle = meta.title.replace(/\.?\s*Tome \d+\.?/, '');
+	item.volume = meta.vol;
+	item.numberOfVolumes = '17';
+	item.place = meta.pub_place;
+	item.publisher = meta.publisher;
+	item.date = meta.pub_date;
+	
+	let firstPage;
+	let lastPage;
+	
+	let pageRe = /\[page \d+:([\da-zA-Z]+)\]/g;
+	let matchArray;
+	while ((matchArray = pageRe.exec(json.text)) !== null) {
+		// iterate through page heading matches. if we haven't set the first
+		// page yet, set it to the page in the heading we just found. always
+		// set the last page to the heading we just found. when we're done,
+		// the first page will correspond to the first heading and the last page
+		// to the last.
+		
+		if (!firstPage) {
+			firstPage = matchArray[1];
+		}
+		lastPage = matchArray[1];
+	}
+	
+	if (firstPage && lastPage) {
+		if (firstPage == lastPage) {
+			item.pages = firstPage;
+		}
+		else {
+			item.pages = `${firstPage}-${lastPage}`;
+		}
+	}
+	
+	item.url = url;
+	item.language = 'fr';
+	item.archive = 'ARTFL Encyclopédie Project (Spring 2021 Edition)';
+	item.libraryCatalog = '';
+
+	item.creators.push({
+		firstName: "Denis",
+		lastName: "Diderot",
+		creatorType: "editor"
+	});
+	
+	item.creators.push({
+		firstName: "Jean le Rond",
+		lastName: "d'Alembert",
+		creatorType: "editor"
+	});
+
+	item.creators.push(
+		ZU.cleanAuthor(
+			meta.kafauth.replace(/\s*\(.*\)/, ''), 'author', true
+		)
+	);
+	
+	if (doc) {
+		item.attachments.push({
+			title: 'Snapshot',
+			document: doc
+		});
+	}
+	
+	if (json.imgs.current_obj_img && json.imgs.current_obj_img.length) {
+		let url = json.imgs.current_obj_img[0];
+		item.attachments.push({
+			title: 'Page Scan',
+			mimeType: `image/${url.split('.').pop()}`,
+			url
+		});
+	}
+	
+	item.complete();
+}

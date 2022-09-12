@@ -1,0 +1,90 @@
+function scrubLowercaseTags(tags) {
+	for (let tag of tags) {
+		if (tag == tag.toLowerCase()) {
+			tags[tags.indexOf(tag)] = ZU.capitalizeTitle(tag, true);
+		}
+	}
+	return tags;
+}
+
+// ignore i-d.vice.com and amuse.vice.com, which can both use Embedded Metadata and don't need this translator
+function detectWeb(doc, url) {
+	if (url.includes('i-d.vice.com') || url.includes('amuse.vice.com')) {
+		return false;
+	}
+	else if (/\/(article|story)\//.test(url)) {
+		return "blogPost";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+
+function scrape(doc, url) {
+	let item = new Zotero.Item('blogPost');
+	let json = JSON.parse(text(doc, 'script[type="application/ld+json"]'));
+	if (json) json = json["@graph"][1];
+	else Z.debug("JSON invalid");
+	item.title = json.headline;
+	
+	item.abstractNote = attr(doc, 'meta[name="description"]', 'content');
+	item.blogTitle = "Vice";
+	item.date = json.dateModified || json.datePublished;
+	item.url = json.mainEntityOfPage['@id'];
+	item.language = attr(doc, 'html', 'lang');
+	
+	// use XPath to support the rare multiple authors and fallback to JSON, which only lists one author
+	let authors = doc.querySelectorAll('.contributor__meta a');
+	if (authors) {
+		for (let author of authors) {
+			item.creators.push(ZU.cleanAuthor(author.text, "author"));
+		}
+	}
+	else item.creators.push(ZU.cleanAuthor(json.author.name, 'author'));
+
+	let tags = doc.querySelectorAll('.tags a');
+	if (tags) {
+		for (let tag of tags) {
+			item.tags.push(tag.text);
+		}
+	}
+	item.tags = scrubLowercaseTags(item.tags);
+	
+	item.attachments.push({
+		document: doc,
+		title: 'Snapshot',
+		mimeType: "text/html"
+	});
+	
+	item.complete();
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	let items = {};
+	let found = false;
+	let rows = doc.querySelectorAll('.vice-card-hed a');
+	for (let row of rows) {
+		var href = row.href;
+		var title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}

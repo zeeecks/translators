@@ -1,0 +1,115 @@
+function detectWeb(doc, url) {
+	if (url.match("/book/")) {
+		return "book";
+	} else if (url.match("/search/?") || url.match("/catalog/?")) {
+		return "multiple";
+	}
+}
+
+function doWeb(doc, url) {
+	var books = new Array();
+	if (detectWeb(doc, url) == "multiple") {
+		var items = new Object();
+		var rows = ZU.xpath(doc, '//div[@class="GCOIblockcontents"]')
+		for (var i in rows) {
+			titles = ZU.xpathText(rows[i], './a/div[@class="MainTitle"]')
+			urls = ZU.xpathText(rows[i], './a/@href')
+			items[urls] = titles;
+		}
+		Zotero.selectItems(items, function (items) {
+			if (!items) {
+				return true;
+			}
+			for (var i in items) {
+				books.push(i);
+			}
+			Zotero.Utilities.processDocuments(books, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var newItem = new Zotero.Item("book");
+	var dataTags = new Object();
+	var fields = ZU.xpath(doc, '//span[@class="detailbox"]');
+
+	for (var i in fields) {
+		var field = fields[i].textContent.trim();
+		var value = ZU.xpathText(fields[i], './following-sibling::span[@class="DetailLabelText"]');
+		//Z.debug(field + ": " + value)
+		switch (field) {
+			case "Title":
+				newItem.title = value;
+				break;
+			case "Subtitle":
+				newItem.title = newItem.title + ": " + value;
+				break;
+			case "Author":
+				newItem.creators.push(ZU.cleanAuthor(value, "author"));
+				break;
+			case "Authors":
+				var author = value.split(/\s*,\s*/);
+				for (var j in author) {
+					newItem.creators.push(ZU.cleanAuthor(author[j], "author"));
+				}
+				break;
+			case "Edited by":
+				var editor = value.split(/\s*,\s*/);
+				for (var j in editor) {
+					newItem.creators.push(ZU.cleanAuthor(editor[j], "editor"));
+				}
+				break;
+			case "Translated by":
+				var translator = value.split(/\s*,\s*/);
+				for (var j in translator) {
+					newItem.creators.push(ZU.cleanAuthor(translator[j], "translator"));
+				}
+				break;
+			case "Publisher":
+				newItem.publisher = value;
+				break;
+			case "ISBN-13":
+				newItem.ISBN = value;
+				break;
+			case "Publication Date":
+			case "Title First Published":
+			case "Publication Date":
+				newItem.date = ZU.strToISO(value);
+				break;
+			case "Collection":
+				newItem.series = value;
+				break;
+			case "Language":
+			case "Languages":
+				newItem.language = value;
+				break;
+			case "Nb of pages":
+			case "Main content page count":
+				newItem.numPages = value;
+				break;
+			case "BISAC Subject Heading":
+				var tags = value.split(/\n/);
+				for (var j in tags) {
+					newItem.tags[j] = tags[j].replace(/.+\//, "").trim();
+				}
+				break;
+		}
+	}
+	
+	//add default publisher, place if nothing else is specified
+	if (!newItem.publisher) {
+		newItem.publisher = "Cornell University Press";
+		newItem.place = "Ithaca, NY";
+	} else if (!newItem.place) {
+		if (newItem.publisher.indexOf("Leuven") != -1) {
+			newItem.place = "Leuven";
+		} else {
+			newItem.place = "Ithaca, NY"
+		}
+	}
+	
+	newItem.abstractNote = ZU.xpathText(doc, '//div[@id="bookpagedescription"]');
+	newItem.complete();
+}

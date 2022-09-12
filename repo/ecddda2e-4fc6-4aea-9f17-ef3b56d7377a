@@ -1,0 +1,262 @@
+function detectSearch(item) {
+	return !!item.arXiv;
+}
+
+function doSearch(item) {
+	var url = 'https://export.arxiv.org/oai2?verb=GetRecord&metadataPrefix=oai_dc'
+		+ '&identifier=oai%3AarXiv.org%3A' + encodeURIComponent(item.arXiv);
+	ZU.doGet(url, parseXML);
+}
+
+
+var version;
+var arxivDOI;
+// these variables will be set in doWeb and
+// can be used then afterwards in the parseXML
+
+
+function detectWeb(doc, url) {
+	var searchRe = /^https?:\/\/(?:([^.]+\.))?(?:arxiv\.org|xxx\.lanl\.gov)\/(?:find|list|catchup)/;
+	var relatedDOI = text(doc, '.doi>a');
+	if (searchRe.test(url)) {
+		return "multiple";
+	}
+	else if (relatedDOI) {
+		return "journalArticle";
+	}
+	else if (ZU.fieldIsValidForType('title', 'preprint')) {
+		return "preprint";
+	}
+	else {
+		return "report";
+	}
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == 'multiple') {
+		var rows = ZU.xpath(doc, '//div[@id="dlpage"]/dl/dt');
+		var getTitleId;
+		if (rows.length) {
+			// arXiv.org format
+			getTitleId = function (row) {
+				var id = ZU.xpathText(row, './/a[@title="Abstract"]').trim().substr(6); // Trim off arXiv:
+				var title = ZU.trimInternal(
+					ZU.xpathText(row, './following-sibling::dd[1]//div[contains(@class, "list-title")]/text()[last()]'));
+				return {
+					title: title,
+					id: id
+				};
+			};
+		}
+		else if ((rows = ZU.xpath(doc, '//table/tbody/tr[./td[@class="lti"]]')).length) {
+			// eprintweb.org format
+			getTitleId = function (row) {
+				var title = ZU.trimInternal(ZU.xpathText(row, './td'));
+				var id = ZU.xpathText(row, './following-sibling::tr[.//a][1]/td/b').trim().substr(6);
+				return {
+					title: title,
+					id: id
+				};
+			};
+		}
+		else {
+			throw new Error("Unrecognized multiples format");
+		}
+		
+		var items = {};
+		for (let i = 0; i < rows.length; i++) {
+			var row = getTitleId(rows[i]);
+			items[row.id] = row.title;
+		}
+		
+		Z.selectItems(items, function (items) {
+			if (!items) return;
+			
+			var urls = [];
+			for (var id in items) {
+				urls.push('http://export.arxiv.org/oai2'
+					+ '?verb=GetRecord&metadataPrefix=oai_dc'
+					+ '&identifier=oai%3AarXiv.org%3A' + encodeURIComponent(id)
+				);
+			}
+			
+			ZU.doGet(urls, parseXML);
+		});
+	}
+	else {
+		var id;
+		var versionMatch = url.match(/v(\d+)(\.pdf)?([?#].+)?$/);
+		if (versionMatch) {
+			version = versionMatch[1];
+		}
+		arxivDOI = text(doc, '.arxivdoi>a');
+		var p = url.indexOf("/pdf/");
+		if (p > -1) {
+			id = url.substring(p + 5, url.length - 4);
+		}
+		else {
+			id = ZU.xpathText(doc, '(//span[@class="arxivid"]/a)[1]')
+				|| ZU.xpathText(doc, '//b[starts-with(normalize-space(text()),"arXiv:")]');
+		}
+		if (!id) throw new Error('Could not find arXiv ID on page.');
+		id = id.trim().replace(/^arxiv:\s*|v\d+|\s+.*$/ig, '');
+		var apiurl = 'http://export.arxiv.org/oai2?verb=GetRecord&metadataPrefix=oai_dc'
+			+ '&identifier=oai%3AarXiv.org%3A' + encodeURIComponent(id);
+		ZU.doGet(apiurl, parseXML);
+	}
+}
+
+
+function parseXML(text) {
+	// Z.debug(text);
+	/* eslint camelcase: ["error", { allow: ["oai_dc"] }] */
+	var ns = {
+		oai_dc: 'http://www.openarchives.org/OAI/2.0/oai_dc/',
+		dc: 'http://purl.org/dc/elements/1.1/',
+		xsi: 'http://www.w3.org/2001/XMLSchema-instance',
+		n: 'http://www.openarchives.org/OAI/2.0/' // Default
+	};
+	var hasPreprint;
+	if (ZU.fieldIsValidForType('title', 'preprint')) {
+		hasPreprint = true;
+	}
+	var newItem;
+	if (hasPreprint) {
+		newItem = new Zotero.Item("preprint");
+	}
+	else {
+		newItem = new Zotero.Item("report");
+	}
+	var xml = (new DOMParser()).parseFromString(text, "text/xml");
+	var dcMeta = ZU.xpath(xml, '//n:GetRecord/n:record/n:metadata/oai_dc:dc', ns)[0];
+
+	newItem.title = getXPathNodeTrimmed(dcMeta, "dc:title", ns);
+	getCreatorNodes(dcMeta, "dc:creator", newItem, "author", ns);
+	var dates = ZU.xpath(dcMeta, './dc:date', ns)
+		.map(element => element.textContent)
+		.sort();
+	if (dates.length > 0) {
+		if (version && version < dates.length) {
+			newItem.date = dates[version - 1];
+		}
+		else {
+			// take the latest date
+			newItem.date = dates[dates.length - 1];
+		}
+	}
+	
+	
+	var descriptions = ZU.xpath(dcMeta, "./dc:description", ns);
+	
+	// Put the first description into abstract, all other into notes.
+	if (descriptions.length > 0) {
+		newItem.abstractNote = ZU.trimInternal(descriptions[0].textContent);
+		for (let j = 1; j < descriptions.length; j++) {
+			var noteStr = ZU.trimInternal(descriptions[j].textContent);
+			newItem.notes.push({ note: noteStr });
+		}
+	}
+	var subjects = ZU.xpath(dcMeta, "./dc:subject", ns);
+	for (let j = 0; j < subjects.length; j++) {
+		var subject = ZU.trimInternal(subjects[j].textContent);
+		newItem.tags.push(subject);
+	}
+					
+	var identifiers = ZU.xpath(dcMeta, "./dc:identifier", ns);
+	for (let j = 0; j < identifiers.length; j++) {
+		var identifier = ZU.trimInternal(identifiers[j].textContent);
+		if (identifier.substr(0, 4) == "doi:") {
+			newItem.DOI = identifier.substr(4);
+		}
+		else if (identifier.substr(0, 7) == "http://") {
+			newItem.url = identifier;
+		}
+	}
+
+	var articleID = ZU.xpath(xml, "//n:GetRecord/n:record/n:header/n:identifier", ns)[0];
+	if (articleID) articleID = ZU.trimInternal(articleID.textContent).substr(14); // Trim off oai:arXiv.org:
+	
+	var articleField = ZU.xpathText(xml, '//n:GetRecord/n:record/n:header/n:setSpec', ns);
+	if (articleField) articleField = "[" + articleField.replace(/^.+?:/, "") + "]";
+	
+	if (articleID && articleID.includes("/")) {
+		newItem.extra = "arXiv:" + articleID;
+	}
+	else {
+		newItem.extra = "arXiv:" + articleID + " " + articleField;
+	}
+	
+
+	var pdfUrl = "https://arxiv.org/pdf/" + articleID + (version ? "v" + version : "") + ".pdf";
+	newItem.attachments.push({
+		title: "arXiv Fulltext PDF",
+		url: pdfUrl,
+		mimeType: "application/pdf"
+	});
+	newItem.attachments.push({
+		title: "arXiv.org Snapshot",
+		url: newItem.url,
+		mimeType: "text/html"
+	});
+	
+	// retrieve and supplement publication data for published articles via DOI
+	if (newItem.DOI) {
+		var translate = Zotero.loadTranslator("search");
+		// CrossRef
+		translate.setTranslator("b28d0d42-8549-4c6d-83fc-8382874a5cb9");
+		
+		var item = { itemType: "journalArticle", DOI: newItem.DOI };
+		translate.setSearch(item);
+		translate.setHandler("itemDone", function (obj, item) {
+			// Z.debug(item)
+			newItem.itemType = item.itemType;
+			newItem.volume = item.volume;
+			newItem.issue = item.issue;
+			newItem.pages = item.pages;
+			newItem.date = item.date;
+			newItem.ISSN = item.ISSN;
+			if (item.publicationTitle) {
+				newItem.publicationTitle = item.publicationTitle;
+				newItem.journalAbbreviation = item.journalAbbreviation;
+			}
+			newItem.date = item.date;
+		});
+		translate.setHandler("done", function () {
+			newItem.complete();
+		});
+		translate.setHandler("error", function () {});
+		translate.translate();
+	}
+	else {
+		newItem.publisher = "arXiv";
+		newItem.number = "arXiv:" + articleID;
+		if (version) {
+			newItem.extra += '\nversion: ' + version;
+		}
+		if (arxivDOI) newItem.DOI = ZU.cleanDOI(arxivDOI);
+		// only for Zotero versions without preprint
+		if (!hasPreprint) {
+			newItem.extra += '\ntype: article';
+		}
+		else newItem.archiveID = "arXiv:" + articleID;
+		newItem.complete();
+	}
+}
+
+
+function getXPathNodeTrimmed(dcMeta, name, ns) {
+	var node = ZU.xpath(dcMeta, './' + name, ns);
+	if (node.length) {
+		return ZU.trimInternal(node[0].textContent);
+	}
+	return '';
+}
+
+function getCreatorNodes(dcMeta, name, newItem, creatorType, ns) {
+	var nodes = ZU.xpath(dcMeta, './' + name, ns);
+	for (var i = 0; i < nodes.length; i++) {
+		newItem.creators.push(
+			ZU.cleanAuthor(nodes[i].textContent, creatorType, true)
+		);
+	}
+}

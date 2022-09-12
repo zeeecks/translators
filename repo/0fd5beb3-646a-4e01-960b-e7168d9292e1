@@ -1,0 +1,177 @@
+function detectWeb(doc, url) {
+	if (url.includes('/article/')) {
+		if (url.includes('/PPR/')) {
+			return 'report';
+		}
+		else {
+			return "journalArticle";
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.citation-title > a[href*="/article/"]');
+	for (let row of rows) {
+		let href = getJSONURL(row.href);
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) return;
+			Object.keys(items).forEach(scrape);
+		});
+	}
+	else {
+		let jsonURL = getJSONURL(url);
+		if (jsonURL) {
+			scrape(jsonURL);
+		}
+		else {
+			Z.debug('Couldn\'t extract ID from URL: ' + url);
+		}
+	}
+}
+
+function scrape(jsonURL) {
+	ZU.doGet(jsonURL, function (respText) {
+		processJSON(JSON.parse(respText));
+	});
+}
+
+function getJSONURL(pageURL) {
+	let id = (pageURL.match(/\/article\/[^/]+\/([^/?]+)/) || [])[1];
+	if (!id) return null;
+	let idField = id.match(/pmc/i) ? 'PMCID' : 'ext_id';
+	return `https://europepmc.org/api/get/articleApi?query=${idField}:${id}&resultType=core&format=json`;
+}
+
+function processJSON(json) {
+	if (!json.resultList || !json.resultList.result || !json.resultList.result.length) {
+		Z.debug('Query returned no results');
+		return;
+	}
+	
+	for (let result of json.resultList.result) {
+		let item = resultToItem(result);
+		item.complete();
+	}
+}
+
+function resultToItem(result) {
+	let item = new Zotero.Item();
+	
+	processPubTypeList(result.pubTypeList, item);
+	
+	item.title = result.title.replace(/.$/, '');
+	item.abstractNote = result.abstractText && ZU.cleanTags(result.abstractText);
+	item.pages = result.pageInfo;
+	item.language = result.language;
+	item.DOI = result.doi && ZU.cleanDOI(result.doi);
+	item.rights = result.license;
+	
+	processJournalInfo(result.journalInfo, item);
+	processURLList(result.fullTextUrlList, item);
+	processAuthorList(result.authorList, item);
+	processKeywordList(result.keywordList, item);
+	
+	if (!item.date) {
+		item.date = result.pubYear;
+	}
+	
+	if (result.pmid) {
+		item.extra = (item.extra || '') + `PMID: ${result.pmid}\n`;
+	}
+	
+	if (result.pmcid) {
+		item.extra = (item.extra || '') + `PMCID: ${result.pmcid}\n`;
+	}
+	
+	return item;
+}
+
+function processPubTypeList(pubTypeList, item) {
+	if (!pubTypeList || !pubTypeList.pubType) return;
+	
+	if (pubTypeList.pubType.length == 1 && pubTypeList.pubType[0] == 'Preprint') {
+		item.itemType = 'report';
+		item.extra = (item.extra || '') + `Type: article\n`;
+	}
+	else {
+		item.itemType = 'journalArticle';
+	}
+}
+
+function processJournalInfo(journalInfo, item) {
+	if (!journalInfo || !journalInfo.journal) return;
+	
+	item.publicationTitle = journalInfo.journal.title.split(' : ')[0].replace('. ', ' ');
+	item.journalAbbreviation = journalInfo.journal.isoabbreviation;
+	item.volume = journalInfo.volume;
+	item.issue = journalInfo.issue;
+	item.ISSN = journalInfo.journal.ESSN || journalInfo.journal.essn
+		|| journalInfo.journal.ISSN || journalInfo.journal.issn;
+	item.date = journalInfo.printPublicationDate;
+}
+
+function processURLList(urlList, item) {
+	if (!urlList || !urlList.fullTextUrl) return;
+	
+	let foundOA = false;
+	for (let urlBlock of urlList.fullTextUrl) {
+		if (!foundOA && urlBlock.documentStyle == 'pdf') {
+			item.attachments.push({
+				url: urlBlock.url,
+				title: `Full Text PDF (${urlBlock.availability})`,
+				mimeType: 'application/pdf'
+			});
+			
+			if (urlBlock.availabilityCode == 'OA') {
+				foundOA = true;
+			}
+		}
+		else if (urlBlock.documentStyle == 'html'
+			|| (urlBlock.documentStyle == 'doi' && !item.url)) {
+			item.url = urlBlock.url;
+		}
+	}
+}
+
+function processAuthorList(authorList, item) {
+	if (!authorList || !authorList.author) return;
+	
+	for (let author of authorList.author) {
+		if (author.firstName && author.lastName) {
+			item.creators.push({
+				firstName: author.firstName || author.initials,
+				lastName: author.lastName,
+				creatorType: 'author'
+			});
+		}
+		else {
+			let nameWithComma = author.fullName.replace(/(\s)/, ',$1');
+			item.creators.push(ZU.cleanAuthor(nameWithComma, 'author', true));
+		}
+	}
+}
+
+function processKeywordList(keywordList, item) {
+	if (!keywordList || !keywordList.keyword) return;
+	
+	for (let keyword of keywordList.keyword) {
+		item.tags.push({ tag: keyword });
+	}
+}

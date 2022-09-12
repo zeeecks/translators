@@ -1,0 +1,96 @@
+function detectWeb(doc, url) {
+	const article = "articles";
+	const isArticle = url.includes(article);
+	if (isArticle) {
+		return 'journalArticle';
+	}
+	else {
+		return 'multiple';
+	}
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), (items) => {
+			if (!items) {
+				return true;
+			}
+			const articles = [];
+			for (const i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+			return true;
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function getSearchResults(doc) {
+	let items = {};
+	let found = false;
+
+	const articleLinks = doc.querySelectorAll('a.article-link');
+
+	articleLinks.forEach((articleLink, articleIndex) => {
+		const href = articleLink.href;
+		let title = text(articleLink, '.programme-note__title');
+		const author = text(articleLink, '.programme-note__author');
+		if (author) {
+			title += ` (${author})`;
+		}
+		items[href] = title;
+		if (found === false) {
+			found = true;
+		}
+	});
+
+	return found ? items : false;
+}
+
+function scrape(doc, _) {
+	const newItem = new Zotero.Item('journalArticle');
+
+	newItem.publicationTitle = "New Left Review";
+	newItem.journalAbbreviation = "New Left Rev";
+
+	const title = ZU.xpath(doc, '//meta[@itemprop="name"]/@content')[0].value;
+	newItem.title = title;
+
+	const description = ZU.xpathText(doc, '//meta[@name="description"]/@content');
+	if (description) {
+		newItem.abstractNote = description;
+	}
+
+	const authors = ZU.xpath(doc, '//meta[@itemprop="author"]/@content');
+	const authorFullNames = authors.map(author => author.value);
+	authorFullNames.forEach((authorFullName) => {
+		newItem.creators.push(ZU.cleanAuthor(authorFullName, "author", false));
+	});
+
+	const issueNum = ZU.xpathText(doc, '//span[@class="article-publication-details__issue_number"]');
+	newItem.issue = issueNum;
+
+	const pageStart = ZU.xpathText(doc, '//meta[@itemprop="pageStart"]/@content');
+	const pageEnd = ZU.xpathText(doc, '//meta[@itemprop="pageEnd"]/@content');
+	newItem.pages = `${pageStart}-${pageEnd}`;
+
+	const publicationDate = ZU.xpathText(doc, '//time[@itemprop="datePublished"]/@datetime');
+	newItem.date = publicationDate;
+
+	let pdfUrl = undefined;
+	const pdfUrlEl = ZU.xpath(doc, '//a[@title="Download PDF version"]');
+	if (pdfUrlEl[0]) {
+		pdfUrl = pdfUrlEl[0].href;
+	}
+	if (pdfUrl) {
+		newItem.attachments.push({
+			url: pdfUrl,
+			mimeType: "application/pdf",
+		});
+	}
+
+	newItem.complete();
+}

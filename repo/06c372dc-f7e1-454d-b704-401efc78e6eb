@@ -1,0 +1,88 @@
+function detectWeb(doc, _url) {
+	// every page claims to be an article, so we have to do something a little
+	// more specific
+	if (doc.querySelector('[itemprop="headline"]')) {
+		return "report";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('article h1 > a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		item.title = item.title.replace(/\s*- The Citizen Lab\s*$/, '');
+		
+		item.creators = [];
+		for (let author of doc.querySelectorAll('header [rel="author"]')) {
+			item.creators.push(ZU.cleanAuthor(author.textContent, 'author'));
+		}
+		
+		let pdfURL = attr(doc, '#other_version_of_post a', 'href');
+		if (pdfURL) {
+			item.attachments.push({
+				title: 'Full Text PDF',
+				mimeType: 'application/pdf',
+				url: pdfURL
+			});
+		}
+		
+		delete item.language; // inaccurate for non-English reports
+		
+		// let's try to match their recommended citations for official publications
+		// from https://citizenlab.ca/publications/
+		item.libraryCatalog = '';
+		item.institution = 'Citizen Lab, University of Toronto';
+		
+		ZU.processDocuments('/publications/', function (pubsDoc) {
+			let pointer = pubsDoc.querySelector(`a[href="${item.url}"]`);
+			if (pointer) {
+				let cite = pointer.parentNode.textContent;
+				let reportNumber = cite.match(/Citizen Lab Research Report No\. [^,]+/);
+				if (reportNumber) {
+					item.reportNumber = reportNumber[0];
+					item.institution = 'University of Toronto';
+				}
+			}
+			
+			item.complete();
+		});
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = "report";
+		trans.doWeb(doc, url);
+	});
+}

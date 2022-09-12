@@ -1,0 +1,120 @@
+// https://github.com/yymao/adstex/blob/64989c9e75d7401ea2b33b546664cbc34cce6a27/adstex.py
+const bibcodeRe = /^\d{4}\D\S{13}[A-Z.:]$/;
+
+function detectSearch(items) {
+	return !!filterQuery(items).length;
+}
+
+function doSearch(items) {
+	let bibcodes = filterQuery(items);
+	if (!bibcodes.length) return;
+	scrape(bibcodes);
+}
+
+function filterQuery(items) {
+	if (!items) return [];
+
+	if (!items.length) items = [items];
+
+	// filter out invalid queries
+	let bibcodes = [];
+	for (let item of items) {
+		if (item.adsBibcode && typeof item.adsBibcode == 'string') {
+			let bibcode = item.adsBibcode.trim();
+			if (bibcodeRe.test(bibcode)) {
+				bibcodes.push(bibcode);
+			}
+		}
+	}
+	return bibcodes;
+}
+
+function extractId(url) {
+	return /\/abs\/([^/]+)/.exec(url)[1];
+}
+
+function getTypeFromId(id) {
+	// bibcodes always start with 4 digit year, then bibstem
+	const bibstem = id.slice(4);
+	if (bibstem.startsWith("MsT") || bibstem.startsWith("PhDT")) {
+		return "thesis";
+	}
+	else if (bibstem.startsWith("arXiv")) {
+		return "report"; // preprint
+	}
+	else {
+		// now scan past the bibstem and find the volume number/type abbrev.
+		const volume = bibstem.substring(5, 9);
+		if (volume == "conf" || volume == "meet" || volume == "coll"
+			|| volume == "proc" || volume == "book") {
+			return "book";
+		}
+		else if (volume == "rept") {
+			return "report";
+		}
+	}
+	return "journalArticle";
+}
+
+function makePdfUrl(id) {
+	return "https://ui.adsabs.harvard.edu/link_gateway/" + id + "/ARTICLE";
+}
+
+function scrape(ids) {
+	ZU.doGet('https://api.adsabs.harvard.edu/v1/accounts/bootstrap', function (respText) {
+		let json = JSON.parse(respText);
+		let token = json.access_token;
+
+		let exportUrl = "https://ui.adsabs.harvard.edu/v1/export/ris";
+		let body = JSON.stringify({
+			bibcode: ids,
+			sort: ['date desc, bibcode desc']
+		});
+
+		ZU.doPost(exportUrl, body, function (respText) {
+			let json = JSON.parse(respText);
+
+			const translator = Zotero.loadTranslator("import");
+			translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7"); // RIS
+			translator.setString(json.export);
+			translator.setHandler("itemDone", function (obj, item) {
+				const id = extractId(item.url);
+				let detectedType = getTypeFromId(id);
+				if (detectedType != item.itemType) {
+					Z.debug(`Changing item type: ${item.itemType} -> ${detectedType}`);
+					item.itemType = detectedType;
+				}
+
+				item.extra = (item.extra || '') + `\nADS Bibcode: ${id}`;
+
+				if (id.slice(4).startsWith('arXiv')) {
+					item.extra += '\nType: article'; // will map to preprint
+				}
+
+				if (item.pages && item.pages.startsWith('arXiv:')) {
+					// not sure why this ends up in the SP tag
+					delete item.pages;
+				}
+				
+				item.attachments.push({
+					url: makePdfUrl(id),
+					title: "Full Text PDF",
+					mimeType: "application/pdf"
+				});
+
+				if (item.journalAbbreviation == item.publicationTitle) {
+					item.journalAbbreviation = '';
+				}
+
+				if (item.date) {
+					item.date = ZU.strToISO(item.date);
+				}
+
+				item.libraryCatalog = 'NASA ADS';
+
+				item.complete();
+			});
+			translator.translate();
+		}, { Authorization: 'Bearer:' + token });
+	});
+}

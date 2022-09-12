@@ -1,0 +1,140 @@
+/**
+	Copyright (c) 2012 Aurimas Vinckevicius
+	
+	This program is free software: you can redistribute it and/or
+	modify it under the terms of the GNU Affero General Public License
+	as published by the Free Software Foundation, either version 3 of
+	the License, or (at your option) any later version.
+	
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+	Affero General Public License for more details.
+	
+	You should have received a copy of the GNU Affero General Public
+	License along with this program. If not, see
+	<http://www.gnu.org/licenses/>.
+*/
+
+function getFieldValue(entry, name) {
+	var value = ZU.xpathText(entry,
+		'.//p/strong[normalize-space(text())="'
+		+ name + ':"]/following-sibling::node()', null, '');
+	return value ? value.trim() : '';
+}
+
+function parseSource(sourceStr) {
+	sourceStr = sourceStr.trim();
+	var matches = sourceStr.match(
+		/^(.*[^.])\.?\s+(\d+\w?)(?:\((\d+)\))?:\s*(\w?\d+(?:-\w?\d+)?)(?:\.?\s+\[[^\]]+\])?\s*\.?$/);
+	if (matches) {
+		return {
+			Type: 'journalArticle',
+			publicationTitle: matches[1],
+			volume: matches[2],
+			issue: matches[3],
+			pages: matches[4]
+		};
+	}
+	else {
+		if (sourceStr.substr(0, 3) == 'In:') {
+			// book section
+			matches = sourceStr.match(/\d+-\d+/);
+			return {
+				Type: 'bookSection',
+				pages: matches ? matches[0] : null
+			};
+		}
+
+		matches = sourceStr.match(/\.\s+(\d+)\s+p\./);
+		return {
+			Type: 'book',
+			numPages: matches ? matches[1] : null
+		};
+	}
+}
+
+function scrape(doc, url) {
+	var entry = doc.getElementById('publicationLayoutLeftSide');
+	var source = parseSource(getFieldValue(entry, 'Source'));
+
+	var item = new Zotero.Item(source.type);
+
+	item.title = getFieldValue(entry, 'Title');
+	item.date = getFieldValue(entry, 'Date');
+	item.abstractNote = getFieldValue(entry, 'Description');
+	item.publicationTitle = source.publicationTitle;
+	item.volume = source.volume;
+	item.issue = source.issue;
+	item.pages = source.pages;
+	item.numPages = source.numPages;
+	item.url = url;
+
+	var authors = getFieldValue(entry, 'Author').split(/;\s+/);
+	for (let i = 0, n = authors.length; i < n; i++) {
+		item.creators.push(
+			ZU.cleanAuthor(
+				ZU.capitalizeTitle(authors[i].replace(/;$/, '')),
+				'author', true));
+	}
+
+	var keywords = ZU.xpath(entry, './/p[@id="keywords"]/a');
+	for (let i in keywords) {
+		item.tags.push(keywords[i].textContent.trim());
+	}
+
+	var pdfUrl = ZU.xpathText(entry, '/html/head/meta[@name="citation_pdf_url"]/@content');
+	if (pdfUrl) {
+		item.attachments.push({
+			url: pdfUrl.trim(),
+			title: 'Full Text PDF',
+			mimeType: 'application/pdf'
+		});
+	}
+
+	item.complete();
+}
+
+function detectWeb(doc, url) {
+	if (url.match(/\/pubs\/\d+$/)) {
+		var entry = doc.getElementById('publicationLayoutLeftSide');
+		if (!entry) return false;
+		
+		var source = parseSource(getFieldValue(entry, 'Source'));
+		return source ? source.type : null;
+	}
+	else if (url.includes('search.php') && getSearchResults(doc, true)) {
+		return 'multiple';
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var links = ZU.xpath(doc, '//table[@class="query"]//tr[1]/following-sibling::tr/td[2]//a');
+	if (checkOnly || !links.length) return !!links.length;
+	
+	var items = {};
+	for (var i = 0; i < links.length; i++) {
+		items[links[i].href] = ZU.trimInternal(links[i].textContent);
+	}
+	
+	return items;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == 'multiple') {
+		Zotero.selectItems(getSearchResults(doc), function (selectedItems) {
+			if (!selectedItems) return;
+
+			var urls = [];
+			for (var i in selectedItems) {
+				urls.push(i);
+			}
+
+			ZU.processDocuments(urls, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}

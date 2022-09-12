@@ -1,0 +1,90 @@
+function detectWeb(doc, url) {
+	if (doc.querySelector('.c-articleContent')
+		&& doc.querySelector('script[type="application/ld+json"]')) {
+		if (url.includes('blog/')) {
+			return "blogPost";
+		}
+		else {
+			return "newspaperArticle";
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a.gs-title');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let json = JSON.parse(text(doc, 'script[type="application/ld+json"]'));
+
+	let item = new Zotero.Item(
+		url.includes('blog/')
+			? 'blogPost'
+			: 'newspaperArticle'
+	);
+	
+	item.title = json.headline;
+	item.abstractNote = json.description
+		|| attr(doc, 'meta[name="description"]', 'content');
+	item.place = extractPlace(item.abstractNote);
+	
+	let sectionLabel = text(doc, '.section-label');
+	if (item.itemType == 'blogPost') {
+		item.blogTitle = `${sectionLabel} (The Atlanta Journal-Constitution)`;
+	}
+	else {
+		item.section = sectionLabel;
+		item.publicationTitle = 'The Atlanta Journal-Constitution';
+		item.ISSN = '1539-7459';
+	}
+	
+	item.language = attr(doc, 'meta[name="language"]', 'content');
+	item.libraryCatalog = 'AJC.com';
+	
+	for (let author of json.author.name.split(', ')) {
+		item.creators.push(ZU.cleanAuthor(author, 'author'));
+	}
+	
+	item.attachments.push({
+		title: 'Snapshot',
+		document: doc
+	});
+	
+	item.complete();
+}
+
+function extractPlace(leadText) {
+	let placeRe = /^\s*([A-Z\-']{3,})\b/;
+	if (placeRe.test(leadText)) {
+		return ZU.capitalizeTitle(leadText.match(placeRe)[1], true);
+	}
+	else {
+		return '';
+	}
+}

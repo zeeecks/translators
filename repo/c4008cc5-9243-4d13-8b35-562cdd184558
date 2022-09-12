@@ -1,0 +1,122 @@
+function detectWeb(doc, url) {
+	if (url.includes('/view')) {
+		if (url.includes('/boeken/')) {
+			return "book";
+		}
+		if (url.includes('/tijdschriften/')) {
+			return "journalArticle";
+		}
+		if (url.includes('/kranten/')) {
+			return "newspaperArticle";
+		}
+		if (url.includes('/radiobulletins/')) {
+			return "radioBroadcast";
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//article//a[contains(@class, "search-result__link") and starts-with(@href, "/")]');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var item = new Zotero.Item(detectWeb(doc, url));
+	var details = ZU.xpath(doc, '(//dl[contains(@class, "metadata__details-description-list")])[1]');
+
+	var title = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="Titel" or normalize-space(text())="Kop")]/following-sibling::dd[1]');
+	
+	if (!title) {
+		title = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="Krantentitel")]/following-sibling::dd[1]');
+	}
+	item.title = title;
+	item.numPages = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and normalize-space(text())="Omvang"]/following-sibling::dd[1]');
+
+	var date = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="Publicatiedatum" or normalize-space(text())="Datum")]/following-sibling::dd[1]');
+	if (!date) {
+		date = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="Jaar van uitgave")]/following-sibling::dd[1]');
+	}
+
+	if (date && date.length > 4) {
+		item.date = date.replace(/(\d{2})-(\d{2})-(\d{4})/, "$3-$2-$1");
+	}
+	else item.date = date;
+
+
+	item.publicationTitle = 	item.issue = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="Krantentitel")]/following-sibling::dd[1]/a');
+	item.libraryCatalog = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and normalize-space(text())="Herkomst"]/following-sibling::dd[1]/a');
+	if (!item.libraryCatalog) item.libraryCatalog = "Delpher";
+	item.publisher = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="Drukker/Uitgever" or normalize-space(text())="Uitgever")]/following-sibling::dd[1]/a');
+	item.callNumber = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="PPN")]/following-sibling::dd[1]/a');
+	var language = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="Taal")]/following-sibling::dd[1]/a');
+	if (language) item.language = ZU.trimInternal(language);
+	// item.volume = ZU.xpathText(details, './/dd[@data-testing-id="search-result__volume"]');
+	item.issue = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="Aflevering")]/following-sibling::dd[1]/a');
+	item.edition = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="Editie")]/following-sibling::dd[1]/a');
+	item.place = ZU.xpathText(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="Plaats van uitgave")]/following-sibling::dd[1]/a');
+
+
+	var tags = ZU.xpath(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="Onderwerp")]/following-sibling::dd/a');
+
+	for (var i = 0; i < tags.length; i++) {
+		item.tags.push(tags[i].textContent);
+	}
+
+	var authors = ZU.xpath(details, './/ancestor::dt[contains(@class,"metadata__details-text") and (normalize-space(text())="Auteur" or normalize-space(text())="Coauteur") ]/following-sibling::dd[1]');
+	for (var j = 0; j < authors.length; j++) {
+		item.creators.push(ZU.cleanAuthor(authors[j].textContent, "author", true));
+	}
+
+	item.url = ZU.xpathText(doc, '(//input[contains(@class,"object-view-menu__share-links-details-input")])[last()]/@value');
+	item.attachments.push({
+		title: "Snapshot",
+		document: doc
+	});
+	
+	var pdflink = ZU.xpathText(doc, './/a[contains(@class,"object-view-menu__downloads-link") and (normalize-space(text())="pdf")]/@href');
+	if (pdflink) {
+		item.attachments.push({
+			title: "Full Text PDF",
+			mimeType: "application/pdf",
+			url: pdflink
+		});
+	}
+	
+  
+	var jpglink = ZU.xpathText(doc, './/a[contains(@class,"object-view-menu__downloads-link") and (normalize-space(text())="jpg")]/@href');
+	if (jpglink) {
+		item.attachments.push({
+			title: "Image",
+			mimeType: "image/jpeg",
+			url: jpglink
+		});
+	}
+
+	item.complete();
+}

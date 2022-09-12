@@ -1,0 +1,36 @@
+/**ToC **/
+FW.MultiScraper({
+itemType         : 'multiple',
+detect           : FW.Xpath('//h6/a'),
+choices          : {
+  titles :  FW.Xpath('//h6/a|//h2/a').text().trim(),
+  urls    :  FW.Xpath('//h6/a|//h2/a').key("href")
+}
+});
+
+/**Search Results**/
+FW.MultiScraper({
+itemType         : 'multiple',
+detect           : FW.Xpath('//li[@class="search-result"]//h3/a'),
+choices          : {
+  titles :  FW.Xpath('//h3/a').text().trim(),
+  urls    :  FW.Xpath('//h3/a').key("href")
+}
+});
+
+/** Articles */
+FW.Scraper({
+itemType         : 'magazineArticle',
+detect           : FW.Xpath('//div[@class="title"]/h1'),
+title            : FW.Xpath('//div[@class="title"]/h1').text().trim(),
+attachments      : [{ url: FW.Url(),
+  title:  "Boston Review Snapshot",
+  type: "text/html" }],
+creators         : FW.Xpath('//div[@class="article-author"]//div[@class="author-name"]'+
+					'|//div[contains(@class, "field-name-field-author")]//a').text().split(/ and /).cleanAuthor("author"),
+date             : FW.Xpath('//span[@class="date-display-single"]/@content').text(),
+ISSN			 : "0734-2306",
+abstractNote	 : FW.Xpath('//div[contains(@class, "field-name-field-subhead")]').text(),
+publicationTitle : "Boston Review",
+language		 : "en-US"
+});

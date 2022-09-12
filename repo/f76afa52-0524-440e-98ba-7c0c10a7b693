@@ -1,0 +1,95 @@
+function detectWeb(doc, url) {
+	if (url.includes('/catalog/')) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('h4.results-title a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) Object.keys(items).forEach(scrapeFromURL);
+		});
+	}
+	else {
+		scrapeFromURL(url);
+	}
+}
+
+function scrapeFromURL(url) {
+	let recordID = url.match(/\/catalog\/([^/?#]+)/)[1];
+	// absolute URLs so this can be called from the Transp. Research Board
+	// translator; relative URLs don't always resolve correctly in processDocuments
+	let enwURL = `https://www.nap.edu/citation.php?type=enw&record_id=${recordID}`;
+	let pdfURL = `https://www.nap.edu/cart/download.cgi?record_id=${recordID}`;
+	
+	ZU.doGet(enwURL, function (enwText) {
+		let translator = Zotero.loadTranslator('import');
+		// Refer/BibIX
+		translator.setTranslator('881f60f2-0802-411a-9228-ce5f47b64c7d');
+		translator.setString(enwText);
+		
+		translator.setHandler('itemDone', function (obj, item) {
+			for (let creator of item.creators) {
+				if (/\b(board|academies|council|national)\b/i.test(creator.lastName)) {
+					creator.lastName = creator.firstName + ' ' + creator.lastName;
+					delete creator.firstName;
+					creator.fieldMode = 1;
+					
+					if (/\bacademies\b/i.test(creator.lastName)) {
+						// some name splitting heuristic in the Refer translator
+						// really screws the name of the institution up
+						creator.lastName = 'National Academies of Sciences, Engineering, and Medicine';
+					}
+				}
+			}
+			
+			if (item.abstractNote) {
+				item.abstractNote = ZU.unescapeHTML(item.abstractNote);
+			}
+			
+			if (item.itemType == 'book' && item.pages) {
+				item.numPages = item.pages;
+				delete item.pages;
+			}
+			
+			if (item.type && !item.DOI) {
+				let DOI = ZU.cleanDOI(item.type);
+				if (DOI) item.DOI = DOI;
+				delete item.type;
+			}
+			
+			item.attachments.push({
+				title: 'Full Text PDF',
+				mimeType: 'application/pdf',
+				url: pdfURL
+			});
+			
+			item.complete();
+		});
+		
+		translator.translate();
+	});
+}
+
+var exports = {
+	scrapeFromURL
+};

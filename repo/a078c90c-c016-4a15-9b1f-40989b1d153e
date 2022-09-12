@@ -1,0 +1,60 @@
+function detectWeb(doc, url) {
+	if (/\/u\/\d+(-[^.]+)?\.html/.test(url)) {
+		return "case";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.utitel > a[href*="/u/"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let id = url.match(/\/u\/(\d+)/)[1];
+	ZU.doGet(`/u/${id}.bib`, function (jsonText) {
+		// returned JSON contains trailing comma in object
+		jsonText = jsonText.replace(/,\s*}/g, '}');
+		let json = JSON.parse(jsonText);
+
+		let item = new Zotero.Item('case');
+		// from openJur's recommended citation
+		item.caseName = `${json.doctype} vom ${json.date}`;
+		item.docketNumber = json.reference;
+		item.court = json.court;
+		item.dateDecided = ZU.strToISO(json.date);
+		item.language = 'de';
+		item.url = json.url;
+		
+		item.attachments.push({
+			title: 'Full Text PDF',
+			url: `/u/${id}.ppdf`
+		});
+		
+		item.complete();
+	});
+}

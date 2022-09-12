@@ -1,0 +1,41 @@
+function detectWeb(doc, url) {
+	if (doc.querySelector('header h1.headlines')) {
+		return "newspaperArticle";
+	}
+	// search is Google in an iframe
+	return false;
+}
+
+function doWeb(doc, url) {
+	scrape(doc, url);
+}
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		// La Presse doesn't add a space before a colon in titles
+		item.title = item.title.replace(' | ', ': ');
+		item.language = 'fr-CA';
+		
+		if (!item.abstractNote) {
+			item.abstractNote = text(doc, '[itemprop="articleBody"] .lead');
+		}
+		
+		if (!item.creators.length) {
+			for (let author of doc.querySelectorAll('.author .name')) {
+				item.creators.push(ZU.cleanAuthor(author.textContent, 'author'));
+			}
+		}
+		
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = "newspaperArticle";
+		trans.doWeb(doc, url);
+	});
+}

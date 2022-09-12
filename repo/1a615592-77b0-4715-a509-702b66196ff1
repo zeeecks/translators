@@ -1,0 +1,66 @@
+function detectWeb(doc, url) {
+	if (url.includes('/bills/')) {
+		return "bill";
+	}
+	else if (url.includes('/bill-search') && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll(`header.search-result-single-item>h4>a[href*="/bills/"]`);
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function scrape(doc) {
+	var item = new Zotero.Item("bill");
+
+	item.title = text(doc, 'h1.node-title');
+
+	let billNumber = text(doc, '.field-name-field-bill-number');
+
+	if (billNumber) {
+		item.billNumber = ZU.trimInternal(billNumber);
+	}
+
+	let sponsors = [...doc.querySelectorAll('.sponsor-item .member h4')].reverse();
+
+	for (let sponsor of sponsors) {
+		let sponsorName = ZU.trimInternal(sponsor.textContent);
+		item.creators.push(ZU.cleanAuthor(sponsorName, "sponsor", false));
+	}
+	item.legislativeBody = 'Colorado General Assembly';
+
+	item.session = text(doc, '.bill-session .field-items > *');
+
+	item.attachments.push({ title: "Snapshot", document: doc });
+
+	let tags = doc.querySelectorAll('.bill-subjects .field-item');
+	for (let tag of tags) {
+		item.tags.push(tag.textContent);
+	}
+
+	item.complete();
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}

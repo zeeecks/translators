@@ -1,0 +1,90 @@
+// attr()/text() v2 per https://github.com/zotero/translators/issues/1277
+function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null;}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null;}
+
+
+function detectWeb(doc, url) {
+	if (/\/(\d{4}\/\d{2}|story|article)\//.test(url)) {
+		return "magazineArticle";
+	} else if (/\/(category|tag|topic)\/|search\/?\?q=|wired\.com\/?$|wired\.co\.uk\/?$/.test(url) && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48'); // embedded metadata
+	translator.setDocument(doc);
+
+	translator.setHandler('itemDone', function (obj, item) {
+		item.itemType = "magazineArticle";
+		if (url.includes("wired.co.uk/article")) {
+			item.publicationTitle = "Wired UK";
+			item.ISSN = "1357-0978";
+			item.date = Zotero.Utilities.strToISO(text(doc,'div.a-author__article-date')); // use LSON-LD when implemented in EM
+		} else { // if not wired.co.uk
+			item.publicationTitle = "Wired";
+			item.ISSN = "1059-1028";
+			item.date = attr(doc,'meta[name="DisplayDate"], meta[name="parsely-pub-date"]','content');
+			item.creators = [];
+			var authorMetadata = attr(doc,'meta[name="Author"], meta[name="parsely-author"]','content') || text(doc, 'a[href^="/author"]');
+			if (authorMetadata) {
+				item.creators.push(ZU.cleanAuthor(authorMetadata, "author"));
+			}
+			if (item.tags) { // catch volume/issue if in tags
+				var match = null;
+				for (let tag of item.tags) {
+					match = tag.match(/^(\d{2})\.(\d{2})$/);
+					if (match) {
+						item.volume = match[1];
+						item.issue = parseInt(match[2]);
+						item.tags.splice(item.tags.indexOf(tag),1);
+						break;
+					}
+				}
+			}
+		}
+		item.complete();
+	});
+	translator.getTranslatorObject(function(trans) {
+		trans.doWeb(doc, url);
+	});
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('div.card-component h2, li.archive-item-component h2, section.c-card-section article.c-card h3');
+	var links = doc.querySelectorAll('.card-component__description > a:first-of-type, li.archive-item-component > a:first-of-type, section.c-card-section article.c-card > a');
+	for (let i=0; i<rows.length; i++) {
+		let href = links[i].href;
+		let title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	switch (detectWeb(doc, url)) {
+	case "multiple":
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+		break;
+	case "magazineArticle":
+		scrape(doc, url);
+		break;
+	}
+}

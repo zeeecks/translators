@@ -1,0 +1,168 @@
+function detectWeb(doc, url) {
+	// multiples are not working (easily) because the website
+	// has to fully load before Zotero can extract its
+	// metadata
+	if (doc.getElementById("pagebody")) {
+		Z.monitorDOMChanges(doc.getElementById("pagebody"), { childList: true });
+	}
+	if (doc.getElementById("application-content")) {
+		Z.monitorDOMChanges(doc.getElementById("application-content"));
+	}
+	
+	if ((url.includes("/biblio?") || url.includes("/publication/"))
+		&& getTitle(doc)) {
+		return "patent";
+	}
+	else if (url.includes('/searchResults') && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a.publicationLinkClass[href*="/publicationDetails/"]');
+	for (let row of rows) {
+		let href = row.href;
+		// replace the AJAX-populated page with the static page that it
+		// populates from
+		href = href.replace('/publicationDetails/', '/data/publicationDetails/');
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function getTitle(doc) {
+	var title = text(doc, '#pagebody>h3, #biblio-title-content');
+	if (title) {
+		if (title.toUpperCase() == title) {
+			title = ZU.capitalizeTitle(title, true);
+		}
+		return title.trim();
+	}
+	return false;
+}
+
+
+// clean up names list and call callback with a clean name
+function cleanNames(names, callback) {
+	if (names) {
+		// Z.debug(names)
+		names = names.replace(/\[[a-zA-Z]*\]/g, "").trim(); // to eliminate country code in square brackets after inventors' and applicants' names
+		names = ZU.capitalizeTitle(names.toLowerCase(), true);
+		names = names.split(/\s*;\s*/);
+		for (var j = 0, m = names.length; j < m; j++) {
+			callback(names[j].replace(/\s*,$/, ''));
+		}
+	}
+}
+
+function scrape(doc, url) {
+	var newItem = new Zotero.Item("patent");
+	newItem.title = getTitle(doc);
+
+	cleanNames(text(doc, '#inventors, #biblio-inventors-content'),
+		function (name) {
+			newItem.creators.push(
+				ZU.cleanAuthor(name.replace(/,?\s/, ', '),	// format displayed is LAST FIRST MIDDLE, so we add a comma after LAST
+					"inventor", true));
+		});
+	
+	var assignees = [];
+	cleanNames(text(doc, '#applicants, #biblio-applicants-content'),
+		function (name) {
+			assignees.push(name);
+		});
+	newItem.assignee = assignees.join('; ');
+	
+	var classifications = {
+		ipc: [],
+		cpc: []
+	};
+	var ipcClasses = doc.querySelectorAll('a.ipc, #biblio-international-content a');
+	for (let ipc of ipcClasses) {
+		classifications.ipc.push(ipc.textContent.replace(';', ''));
+	}
+	var cpcClasses = doc.querySelectorAll('a.classTT:not(.ipc), #biblio-cooperative-content a');
+	for (let cpc of cpcClasses) {
+		classifications.cpc.push(cpc.textContent.replace(';', ''));
+	}
+	var note = "<h1>Classifications</h1>\n<h2>IPC</h2>\n" + classifications.ipc.join('; ') + "<h2>CPC</h2>\n" + classifications.cpc.join('; ');
+	newItem.notes.push({ note: note });
+
+	var rows = ZU.xpath(doc, '//tr[@class="noPrint" or ./th[@class="printTableText"]]');
+
+	var pn = text(doc, '#biblio-publication-number-content');
+	if (pn) { // new design
+		var datePnumber = pn.split('·');
+		if (datePnumber.length == 2) {
+			newItem.patentNumber = datePnumber[0];
+		}
+		newItem.issueDate = ZU.strToISO(datePnumber);
+		var application = text(doc, '#biblio-application-number-content').split('·');
+		if (application.length == 2) {
+			newItem.applicationNumber = application[0];
+			newItem.filingDate = application[1];
+		}
+		newItem.priorityNumbers = text(doc, '#biblio-priority-numbers-label ~ div');
+	}
+	else { // old design
+		for (var i = 0, n = rows.length; i < n; i++) {
+			var label = rows[i].firstElementChild.textContent.trim();
+			var value = rows[i].firstElementChild.nextElementSibling;
+			if (!value) continue;
+			switch (label) {
+				case "Page bookmark":
+				case "Signet":
+				case "Bookmark zur Seite":
+					newItem.url = value.firstElementChild.href;
+					break;
+				case "Application number:":
+				case "Numéro de demande":
+				case "Anmeldenummer:":
+					newItem.applicationNumber = ZU.xpathText(value, './text()[1]');
+					break;
+				case "Priority number(s):":
+				case "Numéro(s) de priorité:":
+				case "Prioritätsnummer(n):":
+					newItem.priorityNumbers = ZU.trimInternal(value.textContent);
+					break;
+			}
+		}
+		
+		var date = text(doc, '#pagebody>h1');
+		if (date) {
+			newItem.issueDate = ZU.strToISO(date);
+		}
+		newItem.patentNumber = text(doc, 'span.sel');
+	}
+	
+	newItem.abstractNote = ZU.trimInternal(
+		text(doc, 'p.printAbstract, #biblio-abstract-content') || '');
+
+	newItem.attachments.push({
+		title: "Espacenet patent record",
+		url: url,
+		snapshot: false
+	});
+
+	newItem.complete();
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}

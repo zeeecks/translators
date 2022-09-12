@@ -1,0 +1,67 @@
+function detectWeb(doc, _url) {
+	if (doc.querySelector('.itemTitle')) {
+		return "artwork";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('td[headers="t2"] a[href*="/handle/"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		// always use issued (created) date, not accession date
+		item.date = attr(doc, 'meta[name="DCTERMS.issued"]', 'content');
+		item.archive = 'SALT Research';
+		
+		for (let attachment of item.attachments) {
+			// images are attached as PDFs
+			if (attachment.url && attachment.url.endsWith('.jpg')) {
+				attachment.mimeType = 'image/jpeg';
+				attachment.title = 'Image';
+			}
+		}
+		
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = "artwork";
+		trans.addCustomFields({
+			'DC.format': 'artworkSize',
+			'DC.identifier': 'archiveLocation'
+		});
+		trans.doWeb(doc, url);
+	});
+}

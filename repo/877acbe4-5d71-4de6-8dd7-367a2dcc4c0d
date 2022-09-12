@@ -1,0 +1,56 @@
+let _cachedWikidataTranslator;
+let _cachedWikidataDoc;
+let _cachedWikidataURL;
+
+function detectWeb(doc, _url) {
+	let wikidataURL = attr(doc, 'h1 a[href^="https://www.wikidata.org/wiki/Q"]', 'href');
+	if (wikidataURL) {
+		loadWikidataTranslator((wikidata) => {
+			loadWikidataPage(wikidataURL, (doc, url) => {
+				Zotero.done(wikidata.detectWeb(doc, url));
+			});
+		});
+	}
+}
+
+function doWeb(doc, url) {
+	scrape(doc, url);
+}
+
+function scrape(doc, _url) {
+	let wikidataURL = attr(doc, 'h1 a[href^="https://www.wikidata.org/wiki/Q"]', 'href');
+	loadWikidataTranslator((wikidata) => {
+		loadWikidataPage(wikidataURL, (doc, url) => {
+			wikidata.doWeb(doc, url);
+		});
+	});
+}
+
+function loadWikidataTranslator(callback) {
+	if (_cachedWikidataTranslator) {
+		callback(_cachedWikidataTranslator);
+	}
+	else {
+		let translator = Zotero.loadTranslator('web');
+		// Wikidata
+		translator.setTranslator('eaef8d43-2f17-45b3-a5cb-affb49bc5e81');
+
+		translator.getTranslatorObject(function (wikidataTranslator) {
+			_cachedWikidataTranslator = wikidataTranslator;
+			callback(wikidataTranslator);
+		});
+	}
+}
+
+function loadWikidataPage(url, callback) {
+	if (_cachedWikidataDoc && _cachedWikidataURL) {
+		callback(_cachedWikidataDoc, _cachedWikidataURL);
+	}
+	else {
+		ZU.processDocuments(url, function (doc, url) {
+			_cachedWikidataDoc = doc;
+			_cachedWikidataURL = url;
+			callback(doc, url);
+		});
+	}
+}

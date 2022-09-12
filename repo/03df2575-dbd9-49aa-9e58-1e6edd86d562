@@ -1,0 +1,235 @@
+var mappingTable = {
+	"Articles in Journals" : "journalArticle",
+	"Articles in books" : "bookSection",
+	"Books" : "book",
+	"eBook" : "book",
+	"Contributions to Conferences" : "conferencePaper",
+	"JRC Reference Reports" : "report",
+	"EUR - Scientific and Technical Research Reports" : "report",
+	"PhD Theses" : "thesis"
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//div[contains(@class, "discovery-result-results") or contains(@class, "panel-primary")]//table//a[contains(@href, "/repository/handle/")]');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function detectWeb(doc, url) {
+	var type = ZU.xpath(doc, '//meta[@name="DC.type"]');
+	if (type.length>0) {
+		if (mappingTable[type[0].content]) {
+			return mappingTable[type[0].content];
+		} else {
+			Z.debug('Unrecognized or ambiguous item type: ' + type[0].content);
+			//ambiguous item type, e.g. "Articles in periodicals and books"
+			var citation = ZU.xpath(doc, '//meta[@name="DCTERMS.bibliographicCitation"]');
+			if (citation.length && citation[0].content.indexOf("Proceeding") == 0) {
+				Z.debug('Found "Proceeding" in citation string --> conferencePaper');
+				return "conferencePaper";
+			}
+			if (ZU.xpath(doc, '//meta[@name="citation_isbn"]').length) {
+				Z.debug("Found ISBN --> bookSection");
+				return "bookSection";
+			}
+			Z.debug('Generic fallback --> journalArticle');
+			return "journalArticle";
+		}
+	}
+	if ( getSearchResults(doc, true) ) {
+		return "multiple";
+	}
+}
+
+//We need a different name for the same function, because of calling another translator inside scrape makes problems.
+function detectWebHere(doc, url) {
+	var type = ZU.xpath(doc, '//meta[@name="DC.type"]');
+	if (type.length>0) {
+		if (mappingTable[type[0].content]) {
+			return mappingTable[type[0].content];
+		} else {
+			Z.debug('Unrecognized or ambiguous item type: ' + type[0].content);
+			//ambiguous item type, e.g. "Articles in periodicals and books"
+			var citation = ZU.xpath(doc, '//meta[@name="DCTERMS.bibliographicCitation"]');
+			if (citation.length && citation[0].content.indexOf("Proceeding") == 0) {
+				Z.debug('Found "Proceeding" in citation string --> conferencePaper');
+				return "conferencePaper";
+			}
+			if (ZU.xpath(doc, '//meta[@name="citation_isbn"]').length) {
+				Z.debug("Found ISBN --> bookSection");
+				return "bookSection";
+			}
+			Z.debug('Generic fallback --> journalArticle');
+			return "journalArticle";
+		}
+	}
+	if ( getSearchResults(doc, true) ) {
+		return "multiple";
+	}
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = new Array();
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+
+	var translator = Zotero.loadTranslator('web');
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');//https://github.com/zotero/translators/blob/master/Embedded%20Metadata.js
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		
+		if (item.title == item.title.toUpperCase()) {
+			item.title = item.title[0] + item.title.substr(1).toLowerCase();//ZU.capitalizeTitle( item.title, true );
+		}
+		
+		//The format of the authors in the meta-tags is very special (pattern = LASTNAME Firstname):
+		//e.g. <meta name="DC.creator" content="DEL RIO GONZALEZ Pablo" xml:lang="en_GB">
+		//We try to overwrite the creators with better splitting of lastName and firstName.
+		var authors = ZU.xpath(doc, '//meta[@name="DC.creator" and @content]|//meta[@name="DC.contributor" and @content]');
+		if (authors) {
+			item.creators = [];
+			for (var a=0; a<authors.length; a++) {
+				var authorsText = authors[a].content;
+				var authorsType = authors[a].name.substr(3);//either creator or contributer
+				var authorParts = authorsText.split(' ');
+				//distinguish between lastName (every letter is in uppercase) from firstName
+				//but there might also be just initials (e.g. "D.") from the firstName
+				var firstName = "";
+				var lastName = "";
+				var splitPos=0;
+				while (splitPos<authorParts.length && authorParts[splitPos].toUpperCase() == authorParts[splitPos] && authorParts[splitPos].indexOf('.') == -1 && authorParts[splitPos].length>1) {
+					authorParts[splitPos] = ZU.capitalizeTitle(authorParts[splitPos], true);
+					splitPos++;
+				}
+				if (splitPos == authorParts.length && splitPos>1) {//guess: last part is firstName
+					firstName = authorParts[splitPos-1];
+					lastName = authorParts.slice(0,splitPos-1).join(' ')
+				} else {
+					firstName = authorParts.slice(splitPos).join(' ');
+					lastName= authorParts.slice(0,splitPos).join(' ');
+				}
+				if (authorsType == "creator") {
+					item.creators.push( {lastName:lastName.trim(), firstName:firstName.trim(), creatorType:"author" });
+				} else {
+					item.creators.push( {lastName:lastName.trim(), firstName:firstName.trim(), creatorType:"contributor" });
+				}
+				
+			}
+		}
+
+		//volume, issue, pages
+		var citation = ZU.xpathText(doc, '//meta[contains(@name, "DCTERMS.bibliographicCitation")]/@content');
+		//e.g. GLOBAL ENVIRONMENTAL CHANGE-HUMAN AND POLICY DIMENSIONS vol. 23 no. 5 p. 892-901
+		//e.g. EUROPEAN PHYSICAL JOURNAL C vol. 73 no. 3 p. 2330 [29 pages]
+		if (citation) {
+			var seperationPos = citation.lastIndexOf('vol.');
+			if (seperationPos == -1) {
+				seperationPos = citation.lastIndexOf('no.');
+			}
+			if (seperationPos == -1) {
+				seperationPos = citation.lastIndexOf('p.');
+			}
+			
+			if (seperationPos > -1) {
+				item.publicationTitle = citation.substring(0,seperationPos).trim();
+				citation = citation.substring(seperationPos);
+				var volume = citation.match(/vol\. (\d+)/);
+				if (!item.volume && volume) {
+					item.volume = volume[1];
+				}
+				var issue = citation.match(/no\. (\d+)/);
+				if (!item.issue && issue) {
+					item.issue = issue[1];
+				}
+				var pages = citation.match(/p\. (\d+\s*-?\s*\d*)/);
+				if (!item.pages && pages) {
+					item.pages = pages[1];
+				}
+			} else {
+				item.publicationTitle = citation;
+			}
+			if (item.publicationTitle == item.publicationTitle.toUpperCase() ) {
+				item.publicationTitle = ZU.capitalizeTitle(item.publicationTitle, true );//item.publicationTitle[0] + item.publicationTitle.substr(1).toLowerCase();
+			}
+			
+		}
+		
+		//The itemType is saved as a tag, which is not useful. Thus we delete it.
+		//e.g. <meta name="citation_keywords" content="PhD Theses">
+		item.tags = [];
+		//e.g. <meta name="DC.description" content="JRC.H.5-Land Resources Management" xml:lang="en_GB">
+		var tags = ZU.xpath(doc, '//meta[@name="DC.description"]');
+		for (var t=0; t<tags.length; t++) {
+			item.tags.push(tags[t].content);
+			//if the tags will end wrongly in the extra field, we delete them
+			if (item.extra) {
+				item.extra = item.extra.replace(tags[t].content, '');
+			}
+		}
+		
+		//Try to find a pdf if there is not already one attached to it.
+		var pdfAttachment = false;
+		for (var a=0; a<item.attachments.length; a++) {
+			if (item.attachments[a].mimeType == "application/pdf") {
+				pdfAttachment = true;
+			}
+		}
+		if (!pdfAttachment) {
+			var pdfUrl = ZU.xpath(doc, '//a[contains(@class, "btn") and contains(@href, ".pdf")]');
+			if (pdfUrl.length) {
+				item.attachments.push({
+					"url": pdfUrl[0].href,
+					"title": "Full Text PDF",
+					"mimeType": "application/pdf"
+				});
+			} else {
+				//If the fulltext is not available at this site, then we should not save the url in this field.
+				delete item.url;
+			}
+			
+		}
+		
+		item.complete();
+		
+	});
+	
+	translator.getTranslatorObject(function(trans) {
+		
+		//Calling detectWeb here on multiples, does only work for the first one?!
+		//Z.debug( 'DETECTWEB = ' + detectWeb(doc, url) );//I guess this then tries (for the nth (n>1) entry) to use the detectWeb function form the called Metadata translator.
+		//Z.debug( 'DETECTWEBHERE = ' + detectWebHere(doc, url) );//This always uses the correct function.
+		trans.itemType = detectWebHere(doc, url);
+		
+		trans.addCustomFields({
+			'DC.relation': 'archiveLocation' //JRC Number
+		});
+		
+		trans.doWeb(doc, url);
+	});
+}

@@ -1,0 +1,98 @@
+// attr()/text() v2
+// eslint-disable-next-line
+function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null;}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null;}
+
+
+function detectWeb(doc, url) {
+	if (url.includes('/record/-/record/')) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	// e.g. http://portal.bjc.qulto.ro/
+	var rows = doc.querySelectorAll('.results-record-wrapper');
+	
+	
+	if (rows.length) {
+		for (let row of rows) {
+			let href = attr(row, '.go-to-record a', 'href');
+			let title = ZU.trimInternal(text(row, '.data-wrapper-title div.metadata-value'));
+			if (!href || !title) continue;
+			if (checkOnly) return true;
+			found = true;
+			items[href] = title;
+		}
+	}
+	else {
+		// e.g. http://www.odrportal.hu
+		rows = doc.querySelectorAll('.recordRow>table');
+		for (let row of rows) {
+			let href = attr(row, 'td a', 'href');
+			let title = ZU.trimInternal(text(row, 'td.title'));
+			if (!href || !title) continue;
+			if (checkOnly) return true;
+			found = true;
+			items[href] = title;
+		}
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function cleanMARCXML(text) {
+	// MARC XML is served inside an HTML div element with line breaks and escaped angle brackets
+	const chars = { '&lt;': '<', '&gt;': '>' };
+	text = text.replace(/&[gl]t;/g, m => chars[m]).replace(/<\/?div[^>]*>|&nbsp;|<br\s?\/>/g, "");
+	return text.trim();
+}
+function scrape(doc, url) {
+	// the URL is constructed using a string after the first "record" in the URL
+	let baseurl = url.substr(0, url.indexOf("record") + 6);
+	let MarcXMLUrl = baseurl + "?p_p_id=DisplayRecord_WAR_akfweb&p_p_lifecycle=2&p_p_state=normal&p_p_mode=view&p_p_resource_id=getRecord&p_p_cacheability=cacheLevelPage&p_p_col_id=column-1&p_p_col_count=2&_DisplayRecord_WAR_akfweb_implicitModel=true";
+	// Z.debug(MarcXMLUrl);
+
+	// regular display
+	let recordId = url.match(/manifestation\/([^/?#]+)/);
+	// permalink
+	if (!recordId) {
+		recordId = url.match(/record\/-\/record\/([^/?#]+)/);
+	}
+	recordId = recordId[1];
+	// Z.debug(baseurl + "/-/record/" + recordId);
+	let post = "recordId=" + recordId + "&dbid=solr&recordType=manifestation&format=marcxml.html&fromOutside=false";
+	ZU.doPost(MarcXMLUrl, post, function (text) {
+		// Z.debug(text);
+		text = cleanMARCXML(text);
+		// Z.debug(text);
+		// MARCXML
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("edd87d07-9194-42f8-b2ad-997c4c7deefd");
+		translator.setString(text);
+		translator.setHandler("itemDone", function (obj, item) {
+			item.attachments.push({
+				title: "Library Catalog link",
+				url: baseurl + "/-/record/" + recordId,
+				snapshot: false
+			});
+			item.complete();
+		});
+		translator.translate();
+	});
+}

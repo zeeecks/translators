@@ -1,0 +1,142 @@
+/*
+   Safari Books Translator
+   Copyright (C) 2014 ProQuest LLC
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+function detectWeb(doc, url) {
+	if (ZU.xpathText(doc,"//div[@id='lefttoc']//a[@class='current']")) {
+		return "bookSection";
+	}
+	else if (url.indexOf("/book/") > -1 || /\/[0-9]{10}/.test(url)) {
+		return "book";
+	}
+	else if (getSearchResults(doc,true)) {
+		return "multiple";
+	}
+}
+
+function doWeb(doc, url) {
+	var type = detectWeb(doc, url)
+	if (type == "book" || type == "bookSection") {
+		importBook(doc, url);
+	}
+	else if (type == "multiple"){
+		var results = getSearchResults(doc);
+		Zotero.selectItems(results, function (ids) {
+			if (!ids) return true;
+			
+			var toProcess = [];
+			for (var id in ids){
+				toProcess.push(id);
+			}
+			ZU.processDocuments(toProcess, importBook);
+		});
+	}
+}
+
+function getSearchResults(doc,quick) {
+	var titles = doc.getElementsByClassName('bookTitle'),
+		items = {},
+		found = false;
+		
+	if (quick) return titles.length;
+	
+	for (var i = 0; i < titles.length; i++) {
+		var title = ZU.xpathText(titles[i],"./a/@title");
+		var link = ZU.xpath(titles[i],"./a")[0].href;
+		items[link] = title;
+		found = true;
+	}
+	return found ? items : false;
+}
+
+function importBook(doc, url,section) {
+	//if we're not on the book page itself but some sub-page (likely a reader page)
+	//then we try and process the book root page, it has more data
+	//parts 1 and 2 are the full url up to and including the book id
+	var parts = url.match(/(.+\/[0-9]{10,13})\/?(.*)/);
+	if (parts && parts[2]) {
+		//a sub-page would likely be a book section, so let's check and save it as such
+		var nav = doc.getElementById("lefttoc");
+		var sectionTitle = nav ? ZU.xpathText(nav,".//a[@class='current']") : false;
+		var prefixes = /^(?:(?:Part|Chapter|Pt|Ch)\.? )?(?:[0-9]{1,3}\.?[0-9]{0,3}|(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))\b[.: ]+/;
+		
+		if (sectionTitle) sectionTitle = sectionTitle.replace(prefixes,"");
+		
+		ZU.processDocuments([parts[1]], function(newDoc,newUrl){
+			var section = sectionTitle ? 
+				{"sectionTitle":sectionTitle,"originalUrl":url}
+				: false;
+			importBook(newDoc,newUrl,section);
+		});
+		return;
+	}
+	var mapping = {
+		name: "title",
+		inLanguage: "language",
+		publisher: "publisher",
+		datePublished: "date",
+		bookEdition: "edition",
+		isbn: "ISBN",
+		numberOfPages: "numPages",
+		description: "abstractNote"
+	};
+	var item = new Z.Item(section ? "bookSection" : "book"),
+		props = ZU.xpath(doc, '//*[@itemprop]'),
+		isbn = {};
+		
+	for (var i = 0; i < props.length; i++) {
+		var name = mapping[props[i].attributes["itemprop"].value];
+		
+		if (name) item[name] = ZU.trimInternal(props[i].textContent);
+		
+		if (name == "edition" 
+			&& (item.edition.toLowerCase() == "first" || item.edition == "1")) {
+			delete item.edition;
+		}
+		
+		if (name == "ISBN") {
+			var label = props[i].previousSibling
+			if (label) isbn[label.textContent] = item[name];
+		}
+	}
+	//many isbn, prefer web over print, and 13 over 10
+	item.ISBN = isbn["Web ISBN-13"]
+		|| isbn["Web ISBN-10"]
+		|| isbn["Print ISBN-13"]
+		|| isbn["Print ISBN-10"]
+		|| item.ISBN; // in case there's no ISBN with props[i].previousSibling above
+				
+	//author is poorly defined, have to search for it by text
+	var dataItems = ZU.xpath(doc, '//ul[@class="metadatalist"]//p[contains(@class,"data")]');
+	for (var i = 0; i < dataItems.length; i++) {
+		var field = dataItems[i].textContent,
+			label = ZU.trimInternal(field.substr(0, field.indexOf(":"))).toLowerCase(),
+			value = ZU.trimInternal(field.substr(field.indexOf(":") + 1));
+
+		if (label == "by") {
+			var authors = value.split(";")
+			for (var j = 0; j < authors.length; j++) {
+				if (authors[j]) item.creators.push(ZU.cleanAuthor(authors[j], 'author'));
+			}
+			break;
+		}
+	}
+	var itemUrl = section ? section.originalUrl : url;
+	item.url = itemUrl.replace(/[?#].*/, '');
+	if (section) {
+		item.bookTitle = item.title;
+		item.title = section.sectionTitle;
+	}
+	item.complete();
+}

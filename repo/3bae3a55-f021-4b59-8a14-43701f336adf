@@ -1,0 +1,109 @@
+function detectWeb(doc, url) {
+	let articleRegex = /\/(article|fullarticle|advance-article|advance-article-abstract|article-abstract|chapter|chapter-abstract)(\/|\.aspx)/;
+	if (articleRegex.test(url)) {
+		if (getArticleId(doc)) {
+			if (url.includes("/chapter/") || url.includes("/chapter-abstract/")) {
+				return "bookSection";
+			}
+			else {
+				return "journalArticle";
+			}
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	// First one is issue, 2nd one search results
+	var rows = doc.querySelectorAll('#ArticleList h5.item-title>a, .al-title a[href*="article"], .al-article-items > .customLink > a[href*="article"], a[class="tocLink"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function getArticleId(doc) {
+	let id = attr(doc, '.citation-download-wrap input[name="resourceId"]', "value");
+	if (!id) {
+		id = attr(doc, 'a[data-article-id]', 'data-article-id');
+	}
+	if (!id) {
+		id = attr(doc, '[data-resource-id]', 'data-resource-id');
+	}
+	// Z.debug(id)
+	return id;
+}
+
+function scrape(doc, url) {
+	let id = getArticleId(doc);
+	let type = attr(doc, '.citation-download-wrap input[name="resourceType"]', "value");
+	// Z.debug(type)
+	if (!type) {
+		if (detectWeb(doc, url) == "bookSection") {
+			type = "5";
+		}
+		else {
+			type = "3";
+		}
+	}
+	let chapterTitle = text(doc, '.chapter-title-without-label');
+	var risURL = "/Citation/Download?resourceId=" + id + "&resourceType=" + type + "&citationFormat=0";
+	// Z.debug(risURL);
+
+	var pdfURL = attr(doc, 'a.article-pdfLink', 'href');
+	// Z.debug("pdfURL: " + pdfURL);
+	ZU.doGet(risURL, function (text) {
+		if (text.includes('We are sorry, but we are experiencing unusual traffic at this time.')) {
+			throw new Error('Rate-limited');
+		}
+		
+		// Z.debug(text);
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(text);
+		translator.setHandler("itemDone", function (obj, item) {
+			if (item.pages) {
+				// if item.pages only spans one page (4-4), replace the range
+				// with a single page number (4).
+				item.pages = item.pages.trim().replace(/^([^-]+)-\1$/, '$1');
+			}
+			if (item.itemType == "bookSection" && chapterTitle) {
+				item.title = chapterTitle;
+			}
+			if (pdfURL) {
+				item.attachments.push({
+					url: pdfURL,
+					title: "Full Text PDF",
+					mimeType: "application/pdf"
+				});
+			}
+			item.attachments.push({
+				title: "Snapshot",
+				document: doc
+			});
+			item.complete();
+		});
+		translator.translate();
+	});
+}

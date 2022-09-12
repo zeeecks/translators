@@ -1,0 +1,71 @@
+function detectWeb(doc, _url) {
+	if (doc.body.matches('.page-article')) {
+		return "journalArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('ul.article-list h4 a');
+	if (!rows.length) rows = doc.querySelectorAll('ul.link-list h4 a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item('journalArticle');
+	
+	item.title = text(doc, '.headline');
+	if (text(doc, '.subline')) item.title += ': ' + text(doc, '.subline');
+	item.abstractNote = text(doc, '.article-summary')
+		.replace(/^\s*Zusammenfassung \/ Summary\s*/, '')
+		.replace(/\s*\n\s*/, '\n\n');
+	item.publicationTitle = attr(doc, 'img.header__logo-image', 'alt')
+		|| text(doc, 'a[id$="linkBreadcrumb_0"]');
+	
+	let infoline = text(doc, '.article-infoline')
+		.match(/[^\s]+ ([^\s]+) \(([0-9]+)\) ([^\s]+)?/);
+	if (infoline) {
+		item.volume = infoline[1];
+		item.date = infoline[2];
+		item.pages = infoline[3];
+	}
+	
+	item.language = 'de-DE';
+	item.url = attr(doc, 'link[rel="canonical"]', 'href') || url;
+	
+	for (let author of doc.querySelectorAll('.byline a')) {
+		item.creators.push(ZU.cleanAuthor(author.innerText, 'author'));
+	}
+	
+	item.attachments.push({
+		title: 'Full Text PDF',
+		url: attr(doc, 'a[id$="_linkPDF"]', 'href'),
+		mimeType: 'application/pdf'
+	});
+	
+	item.complete();
+}

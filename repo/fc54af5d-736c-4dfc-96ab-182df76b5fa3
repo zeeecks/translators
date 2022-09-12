@@ -1,0 +1,77 @@
+// attr()/text() v2
+// eslint-disable-next-line
+function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null}
+
+function detectWeb(doc, url) {
+	if (/\/(view|catalog)\/[a-z\d]+/.test(url) && (attr(doc, 'link[title="marcxml"]', 'href') || attr(doc, 'link[title="mods"]', 'href'))) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('div#documents a[data-context-href*="/"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var marcXML = attr(doc, 'link[title="marcxml"]', 'href');
+	var mods = attr(doc, 'link[title="mods"]', 'href');
+	// Z.debug(marcXML);
+	if (marcXML) {
+		ZU.doGet(marcXML, function (text) {
+			var translator = Zotero.loadTranslator("import");
+			translator.setTranslator("edd87d07-9194-42f8-b2ad-997c4c7deefd");
+			translator.setString(text);
+			translator.setHandler("itemDone", function (obj, item) {
+				item.attachments.push({
+					title: "Library Catalog Link",
+					url: url,
+					snapshot: false
+				});
+				item.complete();
+			});
+			translator.translate();
+		});
+	}
+	else if (mods) {
+		ZU.doGet(mods, function (text) {
+			var translator = Zotero.loadTranslator("import");
+			translator.setTranslator("0e2235e7-babf-413c-9acf-f27cce5f059c");
+			translator.setString(text);
+			translator.setHandler("itemDone", function (obj, item) {
+				item.attachments.push({
+					title: "Library Catalog Link",
+					url: url,
+					snapshot: false
+				});
+				item.complete();
+			});
+			translator.translate();
+		});
+	}
+}

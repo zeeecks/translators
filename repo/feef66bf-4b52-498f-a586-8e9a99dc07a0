@@ -1,0 +1,113 @@
+// Retsinformation exposes two types of data: ELI metadata in the HTML and
+// custom XML/JSON schema via a separate GET request. ELI is standard, so it
+// would be great to use it... but unfortunately, it's inserted client-side
+// by React. in order to make this translator work without a hidden browser,
+// we'll use the JSON.
+
+function detectWeb(doc, url) {
+	if (getSearchResults(doc, url, true)) {
+		return "multiple";
+	}
+	else if (url.includes("/eli/")) {
+		return getType(text(doc, '.m-0'));
+	}
+	return false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Z.selectItems(getSearchResults(doc, url), function (selectedItems) {
+			if (!selectedItems) return;
+			var urls = [];
+			for (var i in selectedItems) {
+				urls.push(i);
+			}
+			ZU.processDocuments(urls, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function getSearchResults(doc, url, checkOnly) {
+	var titles = doc.querySelectorAll("a.document-title");
+
+	if (checkOnly || !titles.length) return !!titles.length;
+
+	var items = {};
+	for (var i = 0; i < titles.length; i++) {
+		items[titles[i].href] = ZU.trimInternal(titles[i].textContent);
+	}
+	
+	return items;
+}
+
+function scrape(doc, url) {
+	ZU.doGet(url.replace(/\/dan.*/, '').replace('/eli', '/api/document/eli'), function (respText) {
+		let json = JSON.parse(respText)[0];
+		let item = new Zotero.Item(getType(json.shortName));
+		
+		let signingDate;
+		let admissionDate;
+		let firstAdmissionDate;
+
+		for (let { displayName: name, displayValue: value } of json.metadata) {
+			if (name == 'Dato for underskrift') {
+				signingDate = value;
+			}
+			else if (name == 'Dato for indlæggelse') {
+				admissionDate = value;
+			}
+			else if (name == 'Dato for førstegangsindlæggelse') {
+				firstAdmissionDate = value;
+			}
+		}
+
+		item.title = json.title;
+		item.shortTitle = json.popularTitle;
+		
+		let number = json.shortName;
+		let date = ZU.strToISO(signingDate || admissionDate || firstAdmissionDate);
+
+		if (item.itemType == 'statute') {
+			item.codeNumber = number;
+			item.dateEnacted = date;
+		}
+		else if (item.itemType == 'case') {
+			item.docketNumber = number;
+			item.dateDecided = date;
+		}
+		else if (item.itemType == 'bill') {
+			item.billNumber = number;
+			item.date = date;
+		}
+		
+		if (json.ressort) {
+			item.creators.push({
+				creatorType: 'author',
+				lastName: json.ressort,
+				fieldMode: 1
+			});
+		}
+		item.url = url;
+		item.complete();
+	});
+}
+
+function getType(documentType) {
+	if (/ADI|AND|BEK|BKI|BST|CIR|CIS|DSK|FIN|KON|LBK|LOV|LTB|PJE|SKR|VEJ|ÅBR/
+		.test(documentType)) {
+		return "statute";
+	}
+
+	if (/DOM|AFG|KEN|UDT/.test(documentType)) {
+		return "case";
+	}
+
+	if (/\d{3}|BSF|Beslutningsforslag/.test(documentType)) {
+		return "bill";
+	}
+
+	return "webpage";
+}

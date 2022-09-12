@@ -1,0 +1,125 @@
+function detectWeb(doc, url) {
+	if (url.includes('/kitap/') || url.includes('product_id')) {
+		return 'book';
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//a[contains(@href, "/kitap/")]|//a[contains(@href, "product_id")]');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+
+/*
+remove titles from creators
+*/
+function cleanCreatorTitles(str) {
+	return str.replace(/Prof.|Doç.|Yrd.|Dr.|Arş.|Öğr.|Gör.|Çevirmen:|Editor:|Derleyici:/g, '');
+}
+
+function localeCapitalizeTitle(name) {
+	return name
+		.split(/\s+/)
+		.map(part => part[0] + part.slice(1).toLocaleLowerCase('tr'))
+		.join(' ');
+}
+
+function scrape(doc, _url) {
+	var item = new Zotero.Item("book");
+	let json = JSON.parse(text(doc, 'body script[type="application/ld+json"]'));
+	
+	item.title = ZU.unescapeHTML(json.name);
+	
+	var authors = doc.querySelectorAll('.pr_producers__manufacturer .pr_producers__link');
+	for (var i = 0; i < authors.length; i++) {
+		var creator = cleanCreatorTitles(authors[i].textContent);
+		item.creators.push(ZU.cleanAuthor(creator, "author"));
+	}
+
+	
+	var translators = ZU.xpath(doc, '//tr[contains(., "Çevirmen")]');
+	for (let i = 0; i < translators.length; i++) {
+		let creator = cleanCreatorTitles(translators[i].textContent);
+		item.creators.push(ZU.cleanAuthor(creator, "translator"));
+	}
+	
+	var editors = ZU.xpath(doc, '//tr[contains(., "Editor")]|//tr[contains(., "Derleyici")]');
+	for (let i = 0; i < editors.length; i++) {
+		let creator = cleanCreatorTitles(editors[i].textContent);
+		item.creators.push(ZU.cleanAuthor(creator, "editor"));
+	}
+	
+	var edition = doc.querySelector('[itemprop=bookEdition]');
+	if (edition) {
+		edition = ZU.trimInternal(edition.textContent);
+		// don't add first edition:
+		if (edition.split('.')[0] != "1") {
+			item.edition = edition.split('.')[0];
+		}
+	}
+	
+	var language = ZU.xpathText(doc, '//tr/td[contains(., "Dil")]//following-sibling::td');
+	if (language) {
+		switch (language.trim()) {
+			case "İNGİLİZCE":
+				item.language = "en";
+				break;
+			default:
+				item.language = "tr";
+		}
+	}
+	
+	var publisher = json.publisher.name;
+	if (publisher) {
+		publisher = ZU.trimInternal(publisher);
+		if (item.language == "tr") {
+			item.publisher = localeCapitalizeTitle(publisher);
+		}
+		else {
+			item.publisher = ZU.capitalizeTitle(publisher, true);
+		}
+	}
+	
+	for (let tr of doc.querySelectorAll('.attributes tr')) {
+		if (text(tr, 'td', 0).startsWith('Yayın Tarihi')) {
+			item.date = ZU.strToISO(text(tr, 'td', 1));
+		}
+	}
+	
+	item.ISBN = json.isbn;
+	item.numPages = json.numberOfPages;
+	item.abstractNote = ZU.unescapeHTML(json.description);
+	
+	item.attachments.push({
+		title: "Snapshot",
+		document: doc
+	});
+		
+	item.complete();
+}

@@ -1,0 +1,57 @@
+function detectWeb(doc, url) {
+	if (url.match(/\/items\?query=/) && ZU.xpathText(doc, '//div[@id="searchResults"]//h2[@class="title"]/a')!=null ) return "multiple";
+	if (url.match(/\/items\/\d+/)) {
+		var test = ZU.xpathText(doc, '//link/@type');
+		if (test && test.indexOf("application/x-endnote-refer")!=-1)
+			return "book";
+	}
+}
+	
+
+function doWeb(doc, url){
+
+	var articles = new Array();
+	if (detectWeb(doc, url) == "multiple") { 
+		var items = {};
+		var titles = doc.evaluate('//div[@id="searchResults"]//h2[@class="title"]/a', doc, null, XPathResult.ANY_TYPE, null);
+		var title;
+		while (title = titles.iterateNext()) {
+			items[title.href] = title.textContent;
+		}
+		Zotero.selectItems(items, function (items) {
+			if (!items) {
+				return true;
+			}
+			for (var i in items) {
+				articles.push(referURL(i));
+			}
+			scrape(articles);
+		});
+	} else {
+		scrape(referURL(url));
+	}
+}
+
+// help function
+function scrape(url){
+	Zotero.Utilities.HTTP.doGet(url, function (text) {
+	//Z.debug(text)
+	//the language text doesn't seem regular Refer, but it's used here
+	var language = text.match(/%G.+/)[0];
+	//load Refer/BibIX translator - until we can import their JSON or RDF format this looks best.
+	var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("881f60f2-0802-411a-9228-ce5f47b64c7d");
+		translator.setString(text);
+		translator.setHandler("itemDone", function(obj, item) {
+			if (language){
+				item.language= language.replace(/%G\s*/, "");
+			}
+			item.complete();
+		});	
+		translator.translate();
+	});
+}
+
+function referURL(url){
+	return url.replace(/\?.+/, "") + ".enw";
+}

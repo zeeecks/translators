@@ -1,0 +1,111 @@
+function detectWeb(doc, url) {
+	var re = new RegExp("^https?://(patft|appft1)\.uspto\.gov/netacgi/nph-Parser");
+	if (doc.title.match(/Search Results:/)){
+		return "multiple"
+	}
+	else if (re.test(doc.location.href)) {
+		return "patent";
+	} else {
+		return "multiple";
+	}
+}
+
+function get_nextsibling(n)
+  {
+  var x=n.nextSibling;
+  while (x.nodeType!=1)
+   {
+   x=x.nextSibling;
+   }
+  return x;
+}
+
+function scrape(doc) {
+
+	var newItem = new Zotero.Item("patent");
+	newItem.url = doc.location.href;
+	var extraText = new String();
+	var tmpStr = new String();
+	var tmpRefs = "";
+	var tmpTitle = doc.title;
+	
+	var fontTags = doc.getElementsByTagName("font");
+	for (var i=0; i<fontTags.length; i++) {
+		if (fontTags[i].getAttribute("size") == "+1") {
+			tmpTitle = tmpTitle + " - " + fontTags[i].innerHTML;
+		}
+	}
+	tmpTitle = Zotero.Utilities.trimInternal(tmpTitle);
+	tmpTitle = tmpTitle.replace(/<[^>]+>/g, "");
+	newItem.title = tmpTitle;
+	
+	var cellTags = doc.getElementsByTagName("td");
+	for (var i=0; i<cellTags.length; i++) {
+
+		var s = new String(cellTags[i].innerHTML);
+		//Z.debug(s)
+		if (s.indexOf("United States Patent") > -1) {
+			
+			tmpStr = cellTags[i+1].childNodes[0].innerHTML;
+			tmpStr = tmpStr.replace(/<[^>]+>/gi, "");
+			tmpStr = tmpStr.replace(/,/gi, "");
+			newItem.patentNumber = tmpStr;
+			
+			tmpStr = cellTags[i+3].innerHTML;
+			tmpStr = tmpStr.replace(/<[^>]+>/gi, "");
+			newItem.issueDate = tmpStr;
+			continue;
+		}
+	
+		// references
+		if (s.indexOf("<a href=\"/netacgi/nph-Parser?Sect2") > -1) {
+				tmpRefs = tmpRefs + cellTags[i].childNodes[0].innerHTML + " ";
+		}
+		if (s.indexOf("<a href=\"http://appft1.uspto.gov/netacgi/nph-Parser?TERM1") > -1) {
+				tmpRefs = tmpRefs + cellTags[i].childNodes[0].innerHTML + " ";
+		}
+	}
+	
+	var centerTags = doc.getElementsByTagName("center");
+	for (var i=0; i<centerTags.length; i++) {
+		var s = new String(centerTags[i].innerHTML);
+		if (s.indexOf("Abstract") > -1) {
+			//newItem.extra = "ok";
+			var el = get_nextsibling(centerTags[i]);
+			newItem.abstractNote = el.innerHTML;
+		}
+	
+	}
+	var inventors = ZU.xpath(doc, '//td[contains(text(), "Inventors")]/following-sibling::td/b|//th[contains(text(), "Inventors")]/following-sibling::td/b');
+ 	var inventor;
+
+	for (i in inventors){
+		Z.debug( inventors[i].textContent)
+		var inventor = inventors[i].textContent.replace(/^\s*;\s*/, "").replace(/;/, ",")
+		newItem.creators.push(ZU.cleanAuthor(inventor, "inventor", true))
+	}
+	
+	var assignee = ZU.xpathText(doc, '//td[contains(text(), "Assignee")]/following-sibling::td/b|//th[contains(text(), "Assignee")]/following-sibling::td/b');
+	newItem.assignee = assignee;
+//References currenlty broken
+	//newItem.references = tmpRefs;
+	newItem.complete();
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "patent") {
+		scrape(doc);
+	} else {
+		var items = Zotero.Utilities.getItemArray(doc, doc, "^https?://(patft|appft1)\.uspto\.gov/netacgi/nph-Parser.+");
+		var uris = new Array();
+		Zotero.selectItems(items, function (items) {
+			if (!items) {
+				return true;
+			}
+			for (var i in items) {
+				uris.push(i);
+			}
+			Zotero.Utilities.processDocuments(uris, scrape);	
+		});
+	}
+}

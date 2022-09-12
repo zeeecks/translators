@@ -1,0 +1,77 @@
+function detectWeb(doc, url) {
+	if (doc.querySelector('.MuiModal-root a[href*="//doi.org/"]')) {
+		return 'journalArticle';
+	}
+	else if (getSearchResults(doc)) {
+		return 'multiple';
+	}
+	Z.monitorDOMChanges(doc.body, { childList: true });
+	return false;
+}
+
+function getSearchResults(doc) {
+	// Disable for now - not reliably able to detect or fetch results
+	return false;
+
+	// We have to make an HTTP request to actually get results,
+	// so just cheat if we're checking in detectWeb()
+	// return !!doc.querySelector('table[class^="ResultsTable"] tbody tr');
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == 'multiple') {
+		let idToken = doc.cookie
+			.split(';')
+			.map(row => row.split('='))
+			.find(row => row[0].trim() == 'idToken')[1];
+		Zotero.debug(idToken)
+		
+		let postBody = JSON.stringify({
+			input: text(doc, 'textarea'),
+			requestOptions: { qaColumns: [] },
+			seenPaperIds: [],
+			starredPaperIds: [],
+			start: 0,
+			stop: doc.querySelectorAll('table[class^="ResultsTable"] tbody tr').length
+		});
+		Zotero.debug(postBody)
+
+		ZU.doPost(
+			'https://inference.elicit.org/elicit-red/lit-review',
+			postBody,
+			(respText) => {
+				let json = JSON.parse(respText);
+				let items = {};
+				Object.values(json.papers)
+					.forEach(p => items[p.doi || p.doiUrl] = p.title);
+				Zotero.selectItems(items, (items) => {
+					if (items) Object.keys(items).map(scrape);
+				});
+			}, 
+			{
+				'Authorization': 'Bearer ' + idToken,
+				'Content-Type': 'application/json'
+			}
+		);
+	}
+	else {
+		scrape(attr(doc, '.MuiModal-root a[href*="//doi.org/"]', 'href'));
+	}
+}
+
+function scrape(doi) {
+	let search = { DOI: ZU.cleanDOI(doi) };
+	let trans = Zotero.loadTranslator('search');
+	trans.setSearch(search);
+
+	trans.setHandler('itemDone', (obj, item) => {
+		item.complete();
+	});
+
+	trans.setHandler('translators', (obj, translators) => {
+		trans.setTranslator(translators);
+		trans.translate();
+	});
+
+	trans.getTranslators();
+}

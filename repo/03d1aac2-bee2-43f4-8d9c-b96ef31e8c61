@@ -1,0 +1,26 @@
+FW.Scraper({
+itemType         : 'journalArticle',
+detect           : FW.Url().match(/content\/\d+\-\d+/),
+title		     : FW.Xpath ('//div[@class="content"]/h3').text().trim().replace(/\.$/, ''),
+creators         : FW.Xpath ('//div[contains(@class, "field-name-field-authors")]/div[@class="field-items"]')
+					.text().remove(/\;.*/m ).split(/\,/).replace(/\s/," ").cleanAuthor("author"),
+date             : FW.Xpath ('//div[contains(@class, "field-name-field-citation")]/div[@class="field-items"]').text().match( /\d{4}/ ).trim(),
+publicationTitle : "Journal of Clinical Oncology",
+journalAbbreviation: "J. Clin. Oncol.",
+ISSN : "0732-183X",
+url 			 : FW.Url(),
+volume:				FW.Xpath ('//div[contains(@class, "field-name-field-citation")]/div[@class="field-items"]').text().remove(/,.+/).remove(/J Clin Oncol\s*/),
+issue:				FW.Xpath ('//div[contains(@class, "field-name-field-citation")]/div[@class="field-items"]').text().match(/\(.+\)/).remove(/[\(\)]/g),
+abstractNote	 : FW.Xpath ('//div[@class="field-label" and contains(text(), "Abstract:")]/following-sibling::p').text().remove(/Background:/).trim(),
+meetingName 	 : FW.Xpath ('//div[contains(@class, "field-name-field-meeting")]/div[@class="field-items"]//a').text().trim(),
+tags			 : FW.Xpath ('//div[contains(@class, "field-name-field-subcategories")]/div[@class="field-items"]//a').text().remove(/;[\s\S]*/).split(/\//).trim()
+});
+
+FW.MultiScraper({
+itemType         : 'multiple',
+detect           : FW.Url().match(/\/search\//),
+choices          : {
+  titles :  FW.Xpath('//li[@class="search-result"]//h3[contains(@class, "title")]/a').text().trim(),
+  urls    :  FW.Xpath('//li[@class="search-result"]//h3[contains(@class, "title")]/a').key("href")
+}
+});

@@ -1,0 +1,89 @@
+function detectWeb(doc, url) {
+	if (url.includes('recordsFor=SingleRecord')) {
+		if (text(doc, '.recordtype').includes('Book')) {
+			return 'book';
+		}
+		else if (text(doc, '.recordtype').includes('Report')) {
+			return 'report';
+		}
+		else if (text(doc, '.literaturetype').includes('Conference')) {
+			return 'conferencePaper';
+		}
+		else {
+			return 'journalArticle';
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.g1');
+	for (let row of rows) {
+		let urlOrRef = attr(row, 'a.fileTypeIcon[href*=".pdf"]', 'href');
+		if (!urlOrRef) {
+			urlOrRef = attr(row, '.lnkCitation', 'id').match(/(\d+)/)[1];
+		}
+		
+		let title = ZU.trimInternal(text(row, '.title-link'));
+		if (!urlOrRef || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[urlOrRef] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) return;
+			for (let urlOrRef of Object.keys(items)) {
+				if (urlOrRef.includes('.pdf')) {
+					// extract the ref number from the PDF URL
+					scrape(urlOrRef.match(/([^/]+)\.pdf/)[1], urlOrRef);
+				}
+				else {
+					scrape(urlOrRef, null);
+				}
+			}
+		});
+	}
+	else {
+		let refNumber = url.match(/RN=([^&]+)/)[1];
+		// no way to get the PDF from the abstract page, and no easy way to get
+		// to the abstract page for an article with a PDF, so this is fine.
+		scrape(refNumber, null);
+	}
+}
+
+function scrape(refNumber, pdfURL) {
+	let risURL = '/search/citationdownload.aspx';
+	let body = `RN=${refNumber}&citationFormat=Ris`;
+	
+	ZU.doPost(risURL, body, function (text) {
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(text);
+		translator.setHandler("itemDone", function (obj, item) {
+			delete item.url;
+			
+			if (pdfURL) {
+				item.attachments.push({
+					title: 'Full Text PDF',
+					mimeType: 'application/pdf',
+					url: pdfURL
+				});
+			}
+			
+			item.extra = (item.extra || '') + `\nINIS Reference Number: ${refNumber}`;
+			
+			item.complete();
+		});
+		translator.translate();
+	});
+}

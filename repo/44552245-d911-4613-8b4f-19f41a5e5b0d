@@ -1,0 +1,64 @@
+function detectWeb(doc, _url) {
+	if (doc.body.classList.contains('single')) {
+		return "newspaperArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('ul.mvp-blog-story-list li a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(text(row, 'h2'));
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		item.tags = item.tags.filter(tag => tag != 'featured' && tag != 'acci');
+		
+		if (item.abstractNote) {
+			item.abstractNote = item.abstractNote.replace(/^\([^)]+\)/, '');
+		}
+		
+		if (item.creators.length == 1 && item.creators[0].lastName == 'News') {
+			item.creators = [];
+		}
+		
+		item.date = attr(doc, '[itemprop="datePublished"]', 'datetime');
+		item.publicationTitle = 'Ariana News';
+		
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = "newspaperArticle";
+		trans.doWeb(doc, url);
+	});
+}

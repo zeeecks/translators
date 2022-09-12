@@ -1,0 +1,22 @@
+function detectWeb(doc, _url) {
+	if (doc.querySelector('.wikipedia_list a')) {
+		return "encyclopediaArticle";
+	}
+	return false;
+}
+
+function doWeb(doc, _url) {
+	let wikipediaURL = attr(doc, '.wikipedia_list a', 'href');
+	ZU.processDocuments(wikipediaURL, scrape);
+}
+
+function scrape(doc, url) {
+	let translator = Zotero.loadTranslator('web');
+	// Wikipedia
+	translator.setTranslator('e5dc9733-f8fc-4c00-8c40-e53e0bb14664');
+	translator.setDocument(doc);
+	
+	translator.getTranslatorObject(function (trans) {
+		trans.doWeb(doc, url);
+	});
+}

@@ -1,0 +1,70 @@
+function detectWeb(doc, _url) {
+	if (ZU.xpathText(doc, '//meta[@property="og:type"]/@content') == "article") {
+		return 'newspaperArticle';
+	}
+	
+	if (getSearchResults(doc, true)) {
+		return 'multiple';
+	}
+	
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('article.article .article-wrapper');
+	for (var i = 0; i < rows.length; i++) {
+		var row = rows[i];
+		var a = row.querySelector('a');
+		
+		var href = a.href;
+		var title = ZU.trimInternal(a.textContent);
+
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var item = new Zotero.Item("newspaperArticle");
+	item.language = "fr-FR";
+	item.title = ZU.xpathText(doc, '//meta[@property="og:title"]/@content');
+	item.publication = "Sud Ouest";
+	item.ISSN = "1760-6454";
+	item.url = url;
+	item.abstract = ZU.xpathText(doc, '//meta[@property="og:description"]/@content');
+	
+	var publicationDate = ZU.xpathText(doc, "(//div[@class='publishing']/time)[1]");
+	if (publicationDate) {
+		item.date = ZU.strToISO(publicationDate);
+	}
+
+	var author = ZU.xpathText(doc, "//div[@class='publishing']/text()");
+	author = author.replace("Par ", "");
+	
+	if (author != "SudOuest.fr avec AFP") {
+		item.creators.push(ZU.cleanAuthor(author, "author", false));
+	}
+
+	item.attachments.push({
+		title: "Snapshot",
+		document: doc
+	});
+  
+	item.complete();
+}

@@ -1,0 +1,63 @@
+function detectWeb(doc, url) {
+	if (url.includes("/search?") && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	if (ZU.xpathText(doc, '//meta[@property="og:type"]/@content')) {
+		return "newspaperArticle";
+	}
+	return false;
+}
+
+
+function scrape(doc, url) {
+	var item = new Zotero.Item("newspaperArticle");
+	item.title = ZU.xpathText(doc, '//meta[@property="og:title"]/@content');
+	item.date = ZU.xpathText(doc, '(//div[contains(@class, "storyPage") and h1]//time)[1]');
+	if (item.date) {
+		if (item.date.match(/\d\d?:\d\d[pa]m/)) {
+			item.date = "Today";
+		}
+		else if (!item.date.match(/\d\d\d\d/)) {
+			item.date += " 2017";
+		}
+		item.date = ZU.strToISO(item.date);
+	}
+	item.abstractNote = ZU.xpathText(doc, '//meta[@property="og:description"]/@content');
+	var tagString = ZU.xpathText(doc, '//meta[@name="news_keywords"]/@content');
+	if (tagString) {
+		item.tags = tagString.split(', ');
+	}
+	item.section = ZU.xpathText(doc, '//div[@class="colStorySectionHeader"]/div[@class="tagItem"]/h2');
+	item.url = ZU.xpathText(doc, '//link[@rel="canonical"]/@href') || url;
+	item.publicationTitle = "TVNZ";
+	item.language = "en-NZ";
+	item.complete();
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//div[@class="tileContent"]/a[h3]');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}

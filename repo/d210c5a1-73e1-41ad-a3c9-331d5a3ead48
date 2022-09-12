@@ -1,0 +1,25 @@
+function detectWeb(doc, url) { return FW.detectWeb(doc, url); }
+function doWeb(doc, url) { return FW.doWeb(doc, url); }
+
+FW.Scraper({
+itemType         : 'blogPost',
+detect           : FW.Url().match(/\/articles\/\d{4}/),
+title            : FW.Xpath('//h1[@itemprop="headline"]').text(),
+attachments      : [{ url: FW.Url(),
+  title:  "IGN snapshot",
+  type: "text/html" }],
+creators         : FW.Xpath('//span[@itemprop="name"]/@content').text().cleanAuthor("author"),
+date             : FW.Xpath('//meta[@name="live_date"]/@content').text(),
+blogTitle        : "IGN",
+language         : "en-US",
+abstractNote     : FW.Xpath('//meta[@name="description"]/@content').text()
+});
+
+FW.MultiScraper({
+itemType         : 'multiple',
+detect           : FW.Url().match(/\/articles\/games\//), // games pages
+choices          : {
+  titles :  FW.Xpath('//a[@class="articleTitle"]').text().trim(),
+  urls    :  FW.Xpath('//a[@class="articleTitle"]').key("href").trim()
+}
+});

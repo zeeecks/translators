@@ -1,0 +1,132 @@
+function detectWeb(doc, url) {
+	if (/[?&]query=/.test(url) && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	else if (ZU.xpathText(doc, '//h3[@itemprop="headline"]')) {
+		if (url.includes('/newspapers/')) {
+			return "newspaperArticle";
+		}
+		if (url.includes('/periodicals/')) {
+			return "journalArticle";
+		}
+		if (url.includes('/manuscripts/')) {
+			return "letter";
+		}
+		if (url.includes('/parliamentary/')) {
+			return "report";
+		}
+	}
+	return false;
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.search-results .article-preview__title a');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var type = detectWeb(doc, url);
+	var item = new Zotero.Item(type);
+	var title = ZU.xpathText(doc, '//h3[@itemprop="headline"]/text()[1]');
+	item.title = ZU.capitalizeTitle(title.toLowerCase(), true);
+	
+	if (type == "journalArticle" || type == "newspaperArticle") {
+		var nav = doc.querySelectorAll('#breadcrumbs .breadcrumbs__crumb');
+		if (nav.length > 1) {
+			item.publicationTitle = nav[1].textContent;
+		}
+		if (nav.length > 2) {
+			item.date = ZU.strToISO(nav[2].textContent);
+		}
+		if (nav.length > 3) {
+			item.pages = nav[3].textContent.match(/\d+/)[0];
+		}
+	}
+	
+	var container = ZU.xpathText(doc, '//h3[@itemprop="headline"]/small');
+	if (container) {
+		var volume = container.match(/Volume (\w+)\b/);
+		if (volume) {
+			item.volume = volume[1];
+		}
+		var issue = container.match(/Issue (\w+)\b/);
+		if (issue) {
+			item.issue = issue[1];
+		}
+	}
+	
+	if (type == "letter") {
+		var author = ZU.xpathText(doc, '//div[@id="researcher-tools-tab"]//tr[td[.="Author"]]/td[2]');
+		// e.g. 42319/Mackay, James, 1831-1912
+		if (author && !author.includes("Unknown")) {
+			author = author.replace(/^[0-9/]*/, '').replace(/[0-9-]*$/, '').replace('(Sir)', '');
+			item.creators.push(ZU.cleanAuthor(author, "author"));
+		}
+		var recipient = ZU.xpathText(doc, '//div[@id="researcher-tools-tab"]//tr[td[.="Recipient"]]/td[2]');
+		if (recipient && !recipient.includes("Unknown")) {
+			recipient = recipient.replace(/^[0-9/]*/, '').replace(/[0-9-]*$/, '').replace('(Sir)', '');
+			item.creators.push(ZU.cleanAuthor(recipient, "recipient"));
+		}
+		
+		item.date = ZU.xpathText(doc, '//div[@id="researcher-tools-tab"]//tr[td[.="Date"]]/td[2]');
+		
+		item.language = ZU.xpathText(doc, '//div[@id="researcher-tools-tab"]//tr[td[.="Language"]]/td[2]');
+	}
+	
+	item.abstractNote = text(doc, '#tab-english');
+
+	item.url = ZU.xpathText(doc, '//div[@id="researcher-tools-tab"]/input/@value');
+	if (!item.url) item.url = text('#researcher-tools-tab p');
+	if (!item.url || !item.url.startsWith('http')) item.url = url;
+	
+	item.attachments.push({
+		title: "Snapshot",
+		document: doc
+	});
+	
+	let imagePageURL = attr(doc, '.imagecontainer a', 'href');
+	if (imagePageURL) {
+		ZU.processDocuments(imagePageURL, function (imageDoc) {
+			item.attachments.push({
+				title: 'Image',
+				mimeType: 'image/jpeg',
+				url: attr(imageDoc, '.imagecontainer img', 'src')
+			});
+			item.complete();
+		});
+	}
+	else {
+		item.complete();
+	}
+}

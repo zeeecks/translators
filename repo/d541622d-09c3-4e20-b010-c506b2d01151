@@ -1,0 +1,349 @@
+/*
+	Key guides for citation:
+	- French: https://www.echr.coe.int/documents/note_citation_fra.pdf
+	- English: https://www.echr.coe.int/documents/note_citation_eng.pdf
+	- OSCOLA: https://www.law.ox.ac.uk/sites/files/oxlaw/oscola_4th_edn_hart_2012.pdf#page=37&zoom=auto,-270,529
+*/
+
+/*
+
+TODO:
+- Handle friendly settlements (the addition to the case name)
+- Handle more than judgments or decisions (summaries, translations, search results)
+- Handle reports
+- Handle resolutions and advisory opinions properly (esp. title)
+- Handle different types of documents via the API.
+- Use keywords for tags
+- Use references to create "related" entries if they exist
+- Put in short titles
+
+=> All relate to one thing: This translator is currently unable to access the API
+to query it for the taxonomies/thesauruses used for decision type ("typedescription"),
+decision-making body ("originatingbody"), keywords ("kpthesaurus"), ...
+Check compiled.js on the HUDOC website in order to learn how to query these aspects.
+Search for "// ###..//sites/echr/echr.js ###"" in compiled.js to find most API fields.
+*/
+
+// After removing text(), eslint complains
+/* eslint-disable no-undef */
+
+// Scrapes some metadata from the document
+// TODO: integrate function into scrape
+function scrapeMetaData(doc, detail) { // Only scrapes the header of the main page
+	switch (detail) {
+		case "appno": return text(doc, "span.column01");
+		case "typedescription": return text(doc, "span.column02");
+		case "originatingbody": return text(doc, "span.column03");
+		case "judgementdate": return text(doc, "span.column04");
+		default: return null;
+	}
+}
+
+// Gets the itemid of the document
+function getItemID(url) {
+	var urlRegex = /%22itemid%22:\[%22([\d-]*)%22]|\?i=([\d-]*)/i;
+	var id = url.match(urlRegex);
+	return id[1];
+}
+
+// Adds the type of judgment at the end of the name
+function getTypeBit(doc, url) { // TODO: Switch to 'url' once we use the API instead
+	var description = scrapeMetaData(doc, "typedescription");
+
+	// The logic assumes the user wants French descriptors if they use the French website
+	if (url.includes("hudoc.echr.coe.int/fre#")) {
+		if (description.includes("Arrêt")) {
+			if (description.includes("satisfaction équitable") && !description.includes("au principal")) {
+				return " (satisfaction équitable)"; // Some papers use "(arrêt satisfaction équitable)"
+			}
+			if (description.includes("exception préliminaire") || description.includes("incompétence")) {
+				return " (exception préliminaire)";
+			}
+
+			if (description.includes("radiation du rôle")) return " (radiation)";
+			if (description.includes("interprétation"))	return " (interprétation)";
+			if (description.includes("révision")) return " (révision)";
+		}
+
+		if (description.includes("Décision")) return " (déc.)";
+		if (description.includes("Affaire Communiquée")) return " (communiquée)"; // TODO: Rather use abbreviation?
+		if (description.includes("Révision")) return " (déc. de révision)"; // TODO: Rather use abbreviation?
+	
+		return "";
+
+		// return " (" + description.split("(")[0].toLowerCase() + ")";
+	}
+
+	if (description.includes("Judgment")) {
+		if (description.includes("Just Satisfaction") && !description.includes("Merits")) {
+			return " (just satisfaction)";
+		}
+		if (description.includes("Objection") || description.includes("Jurisdiction")) {
+			return " (preliminary objections)";
+		}
+		// TODO: Distinguish " (friendly settlement)" and " (striking out)"
+		// 				Requires a queryMetaData function
+		if (description.includes("Struck out")) return " (striking out)";
+		if (description.includes("Interpretation"))	return " (interpretation)";
+		if (description.includes("Revision")) return " (revision)";
+
+		return "";
+	}
+
+	if (description.includes("Decision")) return " (dec.)";
+	if (description.includes("Communicated")) return " (communicated)"; // TODO: Rather use abbreviation?
+	if (description.includes("Revision")) return " (dec. on revision)"; // TODO: Rather use abbreviation?
+
+	return "";
+}
+
+// Downloads the legal summary in HUDOC
+function getLegalSummary(item, appno) {
+	var appnoString = appno.join(" AND appno:");
+
+	// Save the French version if user visited the French version of the judgment
+	var doctypeString = "";
+	if (item.language == "fre") {
+		doctypeString = "doctype:CLINF";
+	}
+	else {
+		doctypeString = "doctype:CLIN";
+	}
+
+	var summaryUrl = "https://hudoc.echr.coe.int/app/query/results?query=contentsitename=ECHR "
+						+ appnoString + " AND "
+						+ doctypeString + " AND "
+						+ "(kpdate=\"" + item.dateDecided + "\")"
+						+ "&select=itemid"
+						+ "&sort=&start=0&length=500";
+
+	// Request id of legal summary
+	ZU.doGet(summaryUrl, function (json) {
+		json = JSON.parse(json);
+
+		if (json.resultcount >= 1) {
+			var textUrl = "https://hudoc.echr.coe.int/app/conversion/docx/html/body?library=ECHR&id="
+						+ json.results[0].columns.itemid;
+
+			Zotero.debug("Getting text of legal summary at: " + textUrl);
+
+			// Request text of legal summary
+			ZU.doGet(textUrl, function (text) {
+				// Remove styles and span tags
+				text = text
+					.replace(/<style>[\s\S]*<\/style>/g, "")
+					.replace(/<\/?span[^>]*>/g, "")
+					.replace(/class='s\S+'/g, "");
+
+				item.notes.push({
+					note: "<h1> HUDOC Legal Summary </h1> <br/>" + text // H1 necessary, otherwise title is lost
+				});
+
+				item.complete();
+			});
+		}
+		else {
+			item.complete();
+		}
+	});
+}
+
+// eslint-disable-next-line no-unused-vars: "url  "
+function detectWeb(doc, url) {
+	// We're waiting until the loading symbol is gone
+	Zotero.monitorDOMChanges(doc.querySelector("#notification div"), { attributes: true, attributeFilter: ["style"] });
+
+	var docType = scrapeMetaData(doc, "typedescription");
+
+	if (url.includes("hudoc.echr.coe.int/fre#")) {
+		// French website
+		if ((docType.includes("Arrêt")
+			|| docType.includes("Décision")
+			|| docType.includes("Avis consultatif")
+			// || docType.includes("Res-") // Removed support for resolutions (not a case and requires info scraped from the text)
+			|| docType.includes("Affaire Communiquée"))
+		// Exclude translations and press releases.
+		&& !(text(doc, "title").toLowerCase().includes("translation]") // toLowerCase() is added because "translati o n" is sometimes capitalized
+			|| docType.includes("Communiqué de presse")
+			|| text(doc, "title").toLowerCase().includes("résumé juridique"))) {
+			return "case";
+		}
+	}
+	else if (url.includes("hudoc.echr.coe.int/eng#")) {
+		// English website (so won't work for Spanish or German)
+		if ((docType.includes("Judgment")
+			|| docType.includes("Decision")
+			|| docType.includes("Advisory Opinion")
+			// || docType.includes("Res-") // Removed support for resolutions (not a case and requires info scraped from the text)
+			|| docType.includes("Communicated"))
+		// Exclude translations and press releases.
+		&& !(text(doc, "title").toLowerCase().includes("translation]") // toLow er Case() is added because "translation" is sometimes capitalized
+			|| docType.includes("Press Release")
+			|| text(doc, "title").toLowerCase().includes("legal summary"))) {
+			return "case";
+		}
+	}
+
+
+	return false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "case") {
+		scrapeDecision(doc, url);
+	}
+}
+
+function scrapeDecision(doc, url) { // Works for both Court judgments and decisions
+	// Item type: case
+	var item = new Zotero.Item("case");
+
+	// Title
+	// FIXME: Abbreviations in the form of A.B.C. or N.A.T.O are capitalized like A.b.c or N.a.t.o. That is a problem in capitalizeText()
+	
+	var capTitle = ZU.capitalizeTitle(text(doc, "title").toLowerCase(), true);
+
+	var splitTitle = capTitle.split(/\(/);
+
+	// If title already contains the type, remove it.
+	// Exclude non-split titles and advisory opinions
+	if (!(splitTitle.length == 1)
+			&&	!(scrapeMetaData(doc, "typedescription").includes("Advisory Opinion")
+				|| scrapeMetaData(doc, "typedescription").includes("Avis consultatif"))) {
+		// Find right cut-off point: Either the part that contains the v./c. or the part that contains the number of the case
+		let titleVersusMatch = splitTitle.findIndex(function (elem) {
+			if (elem.includes("V.") || elem.includes("C.")) {
+				return true;
+			}
+			return false;
+		});
+
+		let titleNumMatch = splitTitle.findIndex(function (elem) {
+			if (/^((No\.|N°)|(II|III|IV|V|VI|VII|VIII|IX|X)\))/i.test(elem)) {
+				return true;
+			}
+			return false;
+		});
+
+		let titleIndex = Math.max(titleVersusMatch, titleNumMatch);
+		capTitle = splitTitle.slice(0, titleIndex + 1).join("(");
+	}
+
+	// Zotero capitalizes the "v."/"c.", so we need to correct that for English and French cases
+	if (capTitle.includes(" V. ")) {
+		capTitle = capTitle.replace(" V. ", " v. ");
+	}
+	else if (capTitle.includes(" C. ")) {
+		capTitle = capTitle.replace(" C. ", " c. ");
+	}
+	item.caseName = capTitle + getTypeBit(doc, url);
+
+	// Court
+	var court = scrapeMetaData(doc, "originatingbody");
+
+	if (url.includes("hudoc.echr.coe.int/fre#")) {
+		if (text(doc, "title").includes("Avis consultatif")) {
+			item.court = "ECtHR [GC]";
+		}
+		else if (court.includes("Grande Chambre")) {
+			item.court = "ECtHR [GC]";
+		}
+		else if (court.includes("Commission")) {
+			item.court = "EComHR"; // TODO: Since the Commission is defunct, should the full title maybe be used instead?
+		}
+		else if (court == "Comité des Ministres") { // For resolutions (which are currently not supported)
+			item.court = "Comité des Ministres";
+		}
+		else {
+			item.court = "ECtHR";
+		}
+	}
+	/* eslint-disable no-lonely-if */
+	else {
+		if (text(doc, "title").includes("Advisory Opinion")) {
+			item.court = "ECtHR [GC]";
+		}
+		else if (court.includes("Grand Chamber")) {
+			item.court = "ECtHR [GC]";
+		}
+		else if (court.includes("Commission")) {
+			item.court = "EComHR"; // TODO: Since the Commission is defunct, should the full title maybe be used instead?
+		}
+		else if (court == "Committee of Ministers") { // For resolutions (which are currently not supported)
+			item.court = "Committee of Ministers";
+		}
+		else {
+			item.court = "ECtHR";
+		}
+	/* eslint-enable no-lonely-if */
+	}
+
+	// Date of decision
+	// convert to simple ISO: yyyy-mm-dd dd.mm.yyyy.
+	item.dateDecided = scrapeMetaData(doc, "judgementdate").split("/")
+		.reverse()
+		.join('-');
+
+	// URL
+	if (url.includes("hudoc.echr.coe.int/fre#")) {
+		item.url = "https://hudoc.echr.coe.int/fre?i=" + getItemID(url);
+	}
+	else {
+		item.url = "https://hudoc.echr.coe.int/eng?i=" + getItemID(url);
+	}
+	
+
+	// Query remaining metadata from API
+	var queryUrl = "https://hudoc.echr.coe.int/app/query/results?query=(contentsitename=ECHR) AND "
+					+ getItemID(url)
+					+ "&select=appno,conclusion,docname,languageisocode" // Adapt based on what is needed
+					+ "&sort=&start=0&length=1";
+
+	ZU.doGet(queryUrl, function (json) {
+		json = JSON.parse(json).results[0].columns;
+
+		Zotero.debug("Queried HUDOC API at: " + queryUrl);
+
+		// Docket number
+
+		// NOTE: This translator doesn't add "app. no.". (See commit history for alternative)
+		// Some styles add "no." (Chicago), while other styles don't add anything (OSCOLA, APA)
+		// However, most citation style guides require adding the numbering system to the docket number ("app. no."/"no."),
+		// so users may need to correct their fields, depending on the style used.
+		
+		// TODO: For advisory opinions, scrape the number from the text
+
+		var appno = json.appno.split(";");
+		item.docketNumber = appno.join(", ");
+
+		// Abstract
+		item.abstractNote = json.conclusion.replace(/;/g, "; ");
+
+		// Language
+		item.language = json.languageisocode.toLowerCase();
+
+		// Download PDF
+		var docname = json.docname;
+
+		var pdfurl = "https://hudoc.echr.coe.int/app/conversion/docx/pdf?library=ECHR&id="
+					+ getItemID(url) + "&filename=" + encodeURIComponent(docname) + ".pdf";
+
+		// pdfurl = encodeURI(pdfurl); // the "docname" may contain chars not part of the URI schema
+
+		Zotero.debug("Getting PDF at: " + pdfurl);
+
+		item.attachments.push({
+			title: "HUDOC Full Text PDF",
+			mimeType: "application/pdf",
+			url: pdfurl
+		});
+
+		// Download Legal Summary
+		if (appno.length !== 0) { // without app. nos. we can't find a legal summary
+			getLegalSummary(item, appno);
+		}
+		else {
+			item.complete();
+		}
+	});
+}

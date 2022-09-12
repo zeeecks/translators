@@ -1,0 +1,84 @@
+function detectWeb(doc, url) {
+	if (url.includes('/books/title/')) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.search-result > a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(text(row, '.search-book-title-tight'));
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let id = url.match(/id=([0-9]+)/);
+	if (!id) throw new Error('No ID in URL: ' + url);
+	id = id[1];
+	
+	let risURL = `https://www.sup.org/books/cite/?id=${id}&ris=true`;
+	
+	ZU.doGet(risURL, function (respText) {
+		var translator = Zotero.loadTranslator("import");
+		// RIS
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(respText);
+		translator.setHandler("itemDone", function (obj, item) {
+			for (let subjectLink of doc.querySelectorAll('.subject-link a')) {
+				let tag = subjectLink.innerText.replace(/\//g, '--');
+				item.tags.push({ tag });
+			}
+			
+			if (!item.creators.length) {
+				Z.debug('No RIS authors; scraping from page');
+				
+				let type = 'author';
+				let names = text(doc, '.book-author').split(/,| and /);
+				for (let name of names) {
+					name = ZU.trimInternal(name);
+					
+					if (name.startsWith('Edited by ')) {
+						type = 'editor';
+						name = name.substring('Edited by '.length);
+					}
+					else if (name.startsWith('Translated by ')) {
+						type = 'translator';
+						name = name.substring('Translated by '.length);
+					}
+					
+					item.creators.push(ZU.cleanAuthor(name, type));
+				}
+			}
+			
+			item.ISBN = ZU.cleanISBN(text(doc, '.bibliographic-info'));
+			item.abstractNote = text(doc, '#description .readable');
+			item.url = '';
+			
+			item.complete();
+		});
+		translator.translate();
+	});
+}

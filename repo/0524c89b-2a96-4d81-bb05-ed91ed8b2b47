@@ -1,0 +1,110 @@
+function detectWeb(doc, url) {
+	if (doc.querySelector('a[href*="/getris"]')) {
+		if (url.includes('bloomsburyfoodlibrary.com/encyclopedia-chapter')) {
+			if (text(doc, '.subfacet').includes('Book chapter')) {
+				return 'bookSection';
+			}
+			else {
+				return 'encyclopediaArticle';
+			}
+		}
+		else if (url.includes('bloomsburyfoodlibrary.com/audio')) {
+			// would like to support these, but the RIS isn't useful
+			return false;
+		}
+		else if (url.includes('bloomsburyfoodlibrary.com/museum')) {
+			return 'artwork';
+		}
+		else {
+			return 'book';
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('a#search-result-link');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var risURL = attr(doc, 'a[href*="/getris"]', 'href');
+
+	ZU.doGet(risURL, function (text) {
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(text);
+		translator.setHandler("itemDone", function (obj, item) {
+			let detectedType = detectWeb(doc, url);
+			if (detectedType == 'encyclopediaArticle' && item.itemType == 'bookSection') {
+				item.itemType = 'encyclopediaArticle';
+				item.encyclopediaTitle = item.bookTitle;
+				delete item.bookTitle;
+			}
+			else if (detectedType == 'book' && item.itemType == 'bookSection') {
+				item.itemType = 'book';
+				delete item.bookTitle;
+				
+				// filter out duplicate "editor" names
+				let names = new Set();
+				item.creators = item.creators.filter((creator) => {
+					let fullName = `${creator.lastName}, ${creator.firstName}`;
+					if (names.has(fullName)) {
+						return false;
+					}
+					
+					names.add(fullName);
+					return true;
+				});
+			}
+			else if (detectedType == 'artwork') {
+				item.itemType = 'artwork';
+			}
+			
+			for (let prop of ['title', 'bookTitle', 'encyclopediaTitle']) {
+				if (item[prop]) {
+					item[prop] = item[prop].replace(/ : /, ': ');
+				}
+			}
+			
+			if (item.publisher) {
+				item.publisher = item.publisher.replace('©', '');
+			}
+			
+			item.archive = '';
+			
+			// contains full text, if we're on a chapter
+			item.attachments.push({
+				title: 'Snapshot',
+				document: doc
+			});
+			
+			item.complete();
+		});
+		translator.translate();
+	});
+}

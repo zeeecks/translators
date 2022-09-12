@@ -1,0 +1,126 @@
+// This translator targets PubAg and NALDC, which are both Blacklight-based
+// catalogs. It does not cover AGRICOLA, which runs Voyager 7 and is covered by
+// that translator.
+
+function detectWeb(doc, _url) {
+	if (doc.querySelector('#document')) {
+		return "journalArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('#documents h3 > a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let risURL = url.replace(/[#?].*$/, '').replace(/\/$/, '') + '.zotero';
+	ZU.doGet(risURL, function (risText) {
+		if (/^A4/m.test(risText)) {
+			// PubAg puts the primary author in A1 and then *all* the authors,
+			// including the primary author again, in A4
+			risText = risText
+				.replace(/^A1.+$/gm, '')
+				.replace(/^A4/gm, 'A1');
+		}
+		
+		// remove ca./b. dates from author names
+		risText = risText.replace(/^(A[U1-4].\s*-\s*.*)(?:ca\.|b\.).*$/m, '$1');
+		
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7"); // RIS
+		translator.setString(risText);
+		translator.setHandler("itemDone", function (obj, item) {
+			if (url.includes('naldc.nal.usda.gov')) {
+				item.libraryCatalog = 'National Agricultural Library Digital Collections';
+			}
+			else {
+				item.libraryCatalog = 'PubAg';
+				if (item.archiveLocation) {
+					// like a PMID
+					item.extra = (item.extra || '')
+						+ `\nPubAg AGID: ${item.archiveLocation}`;
+				}
+			}
+			
+			let PMID = text(doc, 'a[href*="/pubmed/?term="] span');
+			if (PMID) {
+				item.extra = (item.extra || '') + `\nPMID: ${PMID}`;
+			}
+			let PMCID = text(doc, 'a[title*="Access PMCID"] span');
+			if (PMCID) {
+				item.extra = (item.extra || '') + `\nPMCID: ${PMCID}`;
+			}
+			
+			if (!item.url) {
+				let externalURL = attr(doc, '.external a', 'href');
+				if (!externalURL.includes('doi.org')) { // not useful - already saving DOI
+					item.url = externalURL;
+				}
+			}
+			else if (item.url.includes('doi.org')) {
+				delete item.url;
+			}
+			
+			delete item.archive; // 'PubAg'
+			delete item.archiveLocation; // AGID, etc.
+			delete item.numPages; // volume/issue
+			
+			if (item.journalAbbreviation == item.publicationTitle) {
+				delete item.journalAbbreviation;
+			}
+			
+			if (item.volume) {
+				item.volume = item.volume.replace('v.', '');
+			}
+			
+			if (item.issue) {
+				item.issue = item.issue.replace('no.', '');
+			}
+			
+			if (item.pages) {
+				item.pages = item.pages.replace(/pp?\./, '');
+			}
+			
+			if (!item.ISSN) {
+				item.ISSN = ZU.cleanISSN(attr(doc, 'meta[name="citation_issn"]', 'content'));
+			}
+			
+			if (doc.querySelector('.pdf a')) {
+				item.attachments.push({
+					title: 'Full Text PDF',
+					mimeType: 'application/pdf',
+					url: attr(doc, '.pdf a', 'href')
+				});
+			}
+			
+			item.complete();
+		});
+		translator.translate();
+	});
+}

@@ -1,0 +1,69 @@
+/** Articles */
+FW.Scraper({
+itemType         : 'magazineArticle',
+detect           : FW.Xpath('//div[@id="content-header-content"]/h1[@class="instapaper_title"]'),
+title            : FW.Xpath('//h1[@class="instapaper_title"]').text().trim(),
+attachments      : [{ url: FW.Url(),
+  title:  "American Prospect Snapshot",
+  type: "text/html" }],
+creators         : FW.Xpath('//div[@class="view-content"]//p[@class="post-author"]/a').text().cleanAuthor("author"),
+date             : FW.Xpath('//div[@class="view-content"]//p[@class="post-date"]').text(),
+abstractNote	 : FW.Xpath('//div[@class="view-content"]//div[@class="post-teaser"]/p').text(),
+ISSN			 : "1049-7285",
+publicationTitle : "The American Prospect",
+language		 : "en-US"
+});
+ 
+FW.MultiScraper({
+itemType         : 'multiple',
+detect           : FW.Xpath('//div[contains(@class, "views-row")]//h3'),
+choices          : {
+  titles :  FW.Xpath('//div[contains(@class, "views-row")]//h3/a').text().trim(),
+  urls    :  FW.Xpath('//div[contains(@class, "views-row")]//h3/a').key("href")
+}
+});
+
+/**
+Test cases temporarily disabled; they occasionally hang the test harness
+var testCases = [
+	{
+		"type": "web",
+		"url": "http://prospect.org/politics",
+		"items": "multiple"
+	},
+	{
+		"type": "web",
+		"url": "http://prospect.org/article/if-labor-dies-whats-next",
+		"items": [
+			{
+				"itemType": "magazineArticle",
+				"creators": [
+					{
+						"firstName": "Harold",
+						"lastName": "Meyerson",
+						"creatorType": "author"
+					}
+				],
+				"notes": [],
+				"tags": [],
+				"seeAlso": [],
+				"attachments": [
+					{
+						"title": "American Prospect Snapshot",
+						"type": "text/html"
+					}
+				],
+				"url": "http://prospect.org/article/if-labor-dies-whats-next",
+				"abstractNote": "The only way unions can regain their strength and provide a counterweight to corporate power is if liberals join the fight.",
+				"date": "September 13, 2012",
+				"ISSN": "1049-7285",
+				"language": "en-US",
+				"publicationTitle": "The American Prospect",
+				"title": "If Labor Dies, What's Next?",
+				"libraryCatalog": "American Prospect",
+				"accessDate": "CURRENT_TIMESTAMP"
+			}
+		]
+	}
+]
+/** END TEST CASES **/

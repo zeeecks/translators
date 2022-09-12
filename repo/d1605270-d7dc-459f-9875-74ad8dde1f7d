@@ -1,0 +1,69 @@
+function detectWeb(doc, url) {
+	if (url.indexOf("/recherche")>-1) {
+		return "multiple";
+	} else if (ZU.xpathText(doc, '//article[@id="article"]')) {
+		return "newspaperArticle";
+	}
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//article/h2/a');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	
+	var newItem = new Zotero.Item("newspaperArticle");
+	newItem.title = ZU.xpathText(doc, '//h1');
+	
+	var specs = ZU.xpath(doc, '//span[@class="specs_content"]');
+	var date = ZU.xpathText(specs, './text()[1]');
+	newItem.date = ZU.strToISO(date);
+	
+	var authors = ZU.xpath(specs, './a[contains(@href, "/auteur")]');
+	for (var i=0; i<authors.length; i++) {
+		newItem.creators.push(ZU.cleanAuthor(authors[i].textContent, "author"));
+	}
+	
+	newItem.section = ZU.xpathText(specs, './a[@class="section"]');
+	
+	newItem.abstractNote = ZU.xpathText(doc, '//meta[@property="og:description"]/@content');
+	
+	newItem.language = ZU.xpathText(doc, '//meta[@name="language"]/@content');
+
+	newItem.url = url;
+	newItem.publicationTitle = "Le Devoir";
+	newItem.ISSN = "0319-0722";
+
+	newItem.complete();
+}

@@ -1,0 +1,82 @@
+async function detectWeb(doc, url) {
+	if (url.includes('/document/')) {
+		return 'manuscript';
+	}
+	else if (getSearchResults(doc, true)) {
+		return 'multiple';
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.search-res li');
+	for (let row of rows) {
+		let href = attr(row, '.lnk-res', 'href');
+		let title = ZU.trimInternal(text(row, '.itm-title'));
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+async function doWeb(doc, url) {
+	if (await detectWeb(doc, url) == 'multiple') {
+		let items = await Zotero.selectItems(getSearchResults(doc, false));
+		if (items) {
+			await Promise.all(
+				Object.keys(items)
+					.map(url => requestDocument(url).then(scrape))
+			);
+		}
+	}
+	else {
+		await scrape(doc, url);
+	}
+}
+
+async function scrape(doc, url = doc.location.href) {
+	let risURL = url.replace(/[?#].*$/, '') + '.ris';
+	let risText = await requestText(risURL);
+	let translator = Zotero.loadTranslator('import');
+	translator.setTranslator('32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7'); // RIS
+	translator.setString(risText);
+	translator.setHandler('itemDone', (_obj, item) => {
+		if (item.abstractNote) {
+			item.abstractNote = ZU.unescapeHTML(item.abstractNote);
+		}
+
+		if (!item.manuscriptType) {
+			for (let h4 of doc.querySelectorAll('.doc-inf-information h4')) {
+				if (h4.textContent.includes('Type')) {
+					item.manuscriptType = h4.nextElementSibling.textContent;
+				}
+			}
+		}
+
+		for (let subject of doc.querySelectorAll('#subj-list li')) {
+			item.tags.push({ tag: subject.textContent });
+		}
+
+		let pdfURL = attr(doc, 'a.down[href*=".pdf"]', 'href');
+		if (pdfURL) {
+			item.attachments.push({
+				title: 'Full Text PDF',
+				mimeType: 'application/pdf',
+				url: pdfURL
+			});
+		}
+
+		for (let creator of item.creators) {
+			if (creator.firstName && creator.firstName.includes(',')) {
+				creator.firstName = creator.firstName.split(',')[0];
+			}
+		}
+
+		item.complete();
+	});
+	await translator.translate();
+}

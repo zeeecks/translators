@@ -1,0 +1,72 @@
+function scrape(doc) {
+	var translator = Zotero.loadTranslator('web');
+	//use Embedded Metadata
+	translator.setTranslator("951c027d-74ac-47d4-a107-9c3069ab7b48");
+	translator.setDocument(doc);
+	translator.setHandler("itemDone", function(obj, item) {
+		//keywords are all present in a single "subjct" entry, we need to split them up
+		var newTags = new Array();
+		for (var i=0, n=item.tags.length; i<n; i++) {
+			//keywords may also contain html tags, so we strip them
+			newTags = newTags.concat( ZU.cleanTags(item.tags[i]).split('; ') );
+		}
+		//get rid of any duplicates
+		item.tags = ZU.arrayUnique(newTags);
+
+		//abstract ends up in extra. Moving it to abstractNote
+		if (item.extra) {
+			item.abstractNote = item.extra;
+			delete item.extra;
+		}
+
+		item.complete();
+	});
+	translator.translate();
+}
+
+function detectWeb(doc, url) {
+	//Google adsense first loads an empty page, and then reloads the page properly
+	//discard the empty page
+	if ( !Zotero.Utilities.xpath(doc,'//body/*[not(self::iframe) and not(self::script)]').length ) return null;
+
+	if (url.includes('/showToc') || 
+		( url.includes('/search/results') && Zotero.Utilities.xpath(doc, '//tr[td/a[2]]').length ) ) {
+		return "multiple";
+	} else if (url.includes('/article/viewArticle/')) {
+		return "journalArticle";
+	}
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		var items = new Object();
+		var itemx = '//tr[td/a[2]]';
+		var linkx = './/a[text()="Abstract"]/@href';
+		if ( url.includes('/showToc') ) {
+			var titlex = './td[1]/em';
+		} else if (url.includes('/search/results')) {
+			var titlex = './td[2]';
+		}
+
+		var results = ZU.xpath(doc, itemx);
+		for ( var i=0, n=results.length; i<n; i++) {
+			var result = results[i];
+			var title = ZU.xpathText(result, titlex);
+			var link = ZU.xpathText(result, linkx).replace(/\/view\//, '/viewArticle/');
+			items[link] = Zotero.Utilities.trimInternal(title);
+		}
+
+		Zotero.selectItems(items, function(selectedItems) {
+			if (!selectedItems) return true;
+
+			var urls = new Array();
+			for (var i in selectedItems) {
+				urls.push(i);
+			}
+
+			ZU.processDocuments(urls, scrape);
+		});
+	} else {
+		scrape(doc);
+	}
+}

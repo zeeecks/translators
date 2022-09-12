@@ -1,0 +1,163 @@
+function detectImport() {
+	var line;
+	var i = 0;
+	while ((line = Zotero.read()) !== false) {
+		if (line !== "") {
+			if (line.includes("<mets")) {
+				return true;
+			}
+			else if (i++ > 7) {
+				return false;
+			}
+		}
+	}
+	return false;
+}
+
+function doImport() {
+	let xml = Zotero.getXML();
+	
+	for (let mets of xml.querySelectorAll('mets')) {
+		let attachments = createAttachments(mets);
+		
+		for (let dmd of mets.querySelectorAll('dmdSec')) {
+			let mdWrap = dmd.querySelector('mdWrap');
+			if (!mdWrap) {
+				Z.debug('No metadata found in METS item. External metadata is not supported.');
+			}
+			
+			let mdType = mdWrap.getAttribute('MDTYPE');
+			Z.debug(`Found metadata of type '${mdType}'`);
+			
+			let data = extractData(mdWrap);
+			processData(mdType, data, attachments);
+		}
+	}
+}
+
+function createAttachments(mets) {
+	let attachments = [];
+	
+	for (let file of mets.querySelectorAll('fileSec file')) {
+		if (attachments.length >= 5) {
+			Z.debug('Too many attachments. Something is probably wrong.');
+			attachments = [];
+			break;
+		}
+		
+		let mimeType = file.getAttribute('MIMETYPE');
+		let locator = file.querySelector('FLocat[LOCTYPE="URL"]');
+		let url = locator && locator.getAttribute('xlink:href');
+		if (mimeType && url) {
+			let title = 'Attachment';
+			
+			if (mimeType == 'application/pdf') {
+				title = 'PDF'; // full text? often it isn't text!
+			}
+			else if (mimeType.startsWith('audio/')) {
+				title = 'Audio';
+			}
+			else if (mimeType.startsWith('video/')) {
+				title = 'Video';
+			}
+			else if (mimeType.startsWith('image/')) {
+				title = 'Image';
+			}
+			
+			attachments.push({
+				title,
+				mimeType,
+				url
+			});
+		}
+	}
+	
+	return attachments;
+}
+
+function extractData(mdWrap) {
+	for (let child of mdWrap.children) {
+		if (child.tagName.endsWith('xmlData')) {
+			Z.debug('Metadata is XML');
+			return child.innerHTML;
+		}
+		else if (child.tagName.endsWith('binData')) {
+			Z.debug('Metadata is base64 encoded');
+			return atob(child.innerHTML);
+		}
+	}
+	
+	Z.debug('Metadata is in XML (unwrapped)');
+	return mdWrap.innerHTML;
+}
+
+function processData(mdType, data, attachments) {
+	switch (mdType) {
+		case 'MARC':
+			// charmingly, we don't get to know what KIND of MARC we're
+			// getting. we could go off of whether it's encoded as
+			// binary, but that isn't really valid according to the
+			// spec. so we'll just try MARCXML, then binary MARC, then
+			// MAB2 for good measure (it's MARC-ish!).
+			callImport(
+				data,
+				[
+					'edd87d07-9194-42f8-b2ad-997c4c7deefd', // MARCXML
+					'a6ee60df-1ddc-4aae-bb25-45e0537be973', // MARC
+					'91acf493-0de7-4473-8b62-89fd141e6c74', // MAB2
+				],
+				attachments
+			);
+			break;
+		case 'MODS':
+			callImport(
+				data,
+				'0e2235e7-babf-413c-9acf-f27cce5f059c', // MODS
+				attachments,
+				item => item.callNumber = ''
+			);
+			break;
+		case 'OTHER':
+			// this usually indicates some kind of internal metadata that isn't
+			// essential to parse.
+			Z.debug('Skipping \'OTHER\' metadata');
+			break;
+		case 'EAD':
+			// todo: an EAD translator. does anyone use EAD?
+			// https://www.loc.gov/ead/
+		default:
+			throw new Error(`Unsupported metadata type: ${mdType}`);
+	}
+}
+
+function callImport(data, translator, attachments, callback) {
+	let trans = Zotero.loadTranslator('import');
+	trans.setTranslator(translator);
+	trans.setHandler('itemDone', function (_, item) {
+		let numFieldsSet = 0;
+		for (let field of Object.keys(item)) {
+			if (field == 'itemType') continue;
+			
+			if (item[field] && typeof item[field] == 'string') {
+				numFieldsSet++;
+			}
+		}
+		if (numFieldsSet <= 1) {
+			Z.debug(`Skipping item with < 2 fields set: '${item.title}'`);
+			return;
+		}
+		
+		if (attachments) {
+			item.attachments.push(...attachments);
+		}
+		
+		if (item.language == 'zxx') {
+			delete item.language;
+		}
+		
+		if (callback) callback(item);
+		item.complete();
+	});
+	trans.setString(data);
+	trans.translate();
+}

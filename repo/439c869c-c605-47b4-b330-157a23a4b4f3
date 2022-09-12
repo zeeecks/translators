@@ -1,0 +1,70 @@
+/* Translator for Store norske leksikon
+   Copyright (C) 2014 Håkon Malmedal
+
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU Affero General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU Affero General Public License for more details.
+
+   You should have received a copy of the GNU Affero General Public License
+   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+function detectWeb(doc, url) {
+	return "encyclopediaArticle";
+}
+
+function doWeb(doc, url) {
+	var item = new Zotero.Item("encyclopediaArticle");
+
+	item.attachments.push({
+		title: "Snapshot",
+		document: doc
+	});
+
+	item.language = doc.documentElement.lang;
+
+	var abs = ZU.xpathText(doc,
+		'/html/head/meta[@name="description"]/@content',
+		null, '');
+	if (abs) item.abstractNote = ZU.trimInternal(abs);
+
+	url = url.replace(/[#?].*/, '');
+	Zotero.Utilities.doGet(url + ".json", function(json) {
+
+		try {
+			obj = JSON.parse(json);
+		}
+		catch (e) {
+			throw("Failed parsing JSON from " + url + ".json");
+		}
+
+		item.title = obj.title;
+		item.url = obj.url;
+		if (item.url.indexOf("sml.snl.no") != -1) {
+			item.encyclopediaTitle = "Store medisinske leksikon";
+		} else if (item.url.indexOf("nbl.snl.no") != -1) {
+			item.encyclopediaTitle = "Norsk biografisk leksikon";
+		} else if (item.url.indexOf("nkl.snl.no") != -1) {
+			item.encyclopediaTitle = "Norsk kunstnerleksikon";
+		} else {
+			item.encyclopediaTitle = "Store norske leksikon";
+		}
+		item.date = obj.changed_at;
+		item.rights = obj.license_name;
+		obj.authors.forEach(function(element) {
+			// Don't include Store norske leksikon as author
+			if (element.full_name.indexOf("leksikon") === -1) {
+				item.creators.push(ZU.cleanAuthor(element.full_name,
+					"author", false));
+			}
+		});
+		item.tags.push(obj.subject_title);
+		item.complete();
+	})
+}

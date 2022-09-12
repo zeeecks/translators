@@ -1,0 +1,64 @@
+function detectWeb(doc, url) {
+	//if (doc.getElementById("copernicus_publications"))
+	if (url.search(/\/search\.php|\.net\/$|issue\d+\.html/)!=-1 && getSearchResults(doc, true)) {
+		return "multiple";
+	} else if (ZU.xpathText(doc, '//span[@class="pb_article_title"]')) {
+		return "journalArticle";
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.getElementsByClassName("article-title");
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function scrape (doc, url){
+	var abstract = ZU.xpathText(doc, '//span[@class="pb_abstract"]');
+	var link = ZU.xpathText(doc, '//ul[@class="additional_info"]/li/a[contains(text(), "EndNote")]/@href');
+	Zotero.Utilities.HTTP.doGet(link, function(text) {
+		//Z.debug(text)
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(text);
+		translator.setHandler("itemDone", function(obj, item) {
+			item.repository = "Copernicus Online Journals";
+			if (!item.abstractNote && abstract){
+				item.abstractNote = abstract.replace(/\n(?!\n)\s*/g, " ").replace(/^Abstract\.\s*/, ""); //preserve paragraphs but not line breaks all over
+			}
+			if(item.attachments[0]) {
+				item.attachments[0].title = item.publicationTitle + " PDF";
+				item.attachments[0].mimeType = "application/pdf";
+			}
+			item.complete();
+		});
+		translator.translate();
+	});
+}
+
+function doWeb(doc, url) {
+	var arts = [];
+	if (detectWeb(doc, url) == "multiple") {
+		var items = getSearchResults(doc);
+		Zotero.selectItems(items, function (items) {
+			if (!items) {
+				return true;
+			}
+			for (var i in items) {
+				arts.push(i);
+			}
+			ZU.processDocuments(arts, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}

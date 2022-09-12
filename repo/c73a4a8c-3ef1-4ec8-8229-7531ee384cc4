@@ -1,0 +1,275 @@
+// http://www.loc.gov/marc/relators/relaterm.html
+// From MARC.js
+const RELATORS = {
+	act: "castMember",
+	asn: "contributor", // Associated name
+	aut: "author",
+	cmp: "composer",
+	ctb: "contributor",
+	drt: "director",
+	edt: "editor",
+	pbl: "SKIP", // publisher
+	prf: "performer",
+	pro: "producer",
+	pub: "SKIP", // publication place
+	trl: "translator"
+};
+
+const RECORD_MAPPING = {
+	oclcNumber: (item, value) => item.extra = (item.extra || '') + `\nOCLC: ${value}`,
+	title: (item, value) => item.title = value.replace(' : ', ': '),
+	edition: 'edition',
+	publisher: 'publisher',
+	publicationPlace: 'place',
+	publicationDate: (item, value) => item.date = ZU.strToISO(value),
+	catalogingLanguage: 'language',
+	summary: 'abstractNote',
+	physicalDescription: (item, value) => {
+		item.numPages = (value.match(/\d+(?= pages?)/) || value.match(/\d+/) || [])[0];
+	},
+	series: 'series',
+	subjectsText: 'tags',
+	cartographicData: 'scale',
+	// genre: 'genre',
+	doi: (item, value) => item.DOI = ZU.cleanDOI(value),
+	mediumOfPerformance: 'medium',
+	issns: (item, value) => item.ISSN = ZU.cleanISSN(value),
+	sourceIssn: (item, value) => item.ISSN = ZU.cleanISSN(value),
+	digitalAccessAndLocations: (item, value) => {
+		if (value.length) {
+			item.url = value[0].uri;
+		}
+	},
+	isbns: (item, value) => item.ISBN = ZU.cleanISBN(value.join(' ')),
+	isbn13: (item, value) => item.ISBN = ZU.cleanISBN(value),
+	publication: (item, value) => {
+		try {
+			let [, publicationTitle, volume, date, page] = value.match(/^(.+), (.+), (.+), (.+)$/);
+			item.publicationTitle = publicationTitle;
+			item.volume = volume;
+			item.date = ZU.strToISO(date);
+			item.pages = page;
+		}
+		catch (e) {
+			Z.debug(e);
+		}
+	},
+	contributors: (item, value) => {
+		for (let contrib of value) {
+			let creatorType;
+			if (contrib.relatorCodes && contrib.relatorCodes[0]) {
+				creatorType = RELATORS[contrib.relatorCodes[0]] || 'contributor';
+				if (creatorType == 'SKIP') continue;
+			}
+			else {
+				creatorType = ZU.getCreatorsForType(item.itemType)[0];
+			}
+			let creator = {
+				firstName: contrib.firstName && contrib.firstName.text,
+				lastName: contrib.secondName && contrib.secondName.text,
+				creatorType
+			};
+			// If only firstName field, set as single-field name
+			if (creator.firstName && !creator.lastName) {
+				creator.lastName = creator.firstName;
+				delete creator.firstName;
+				creator.fieldMode = 1;
+			}
+			item.creators.push(creator);
+		}
+	}
+};
+
+function detectWeb(doc, url) {
+	if (url.includes('/title/') && doc.querySelector('#__NEXT_DATA__')) {
+		return getItemType(JSON.parse(text(doc, '#__NEXT_DATA__')).props.pageProps.record);
+	}
+	else if (getSearchResults(doc, true)) {
+		return 'multiple';
+	}
+	return false;
+}
+
+function getItemType(record) {
+	if (record.generalFormat == 'ArtChap') {
+		if (record.specificFormat == 'Artcl') {
+			return 'journalArticle';
+		}
+		else {
+			return 'bookSection';
+		}
+	}
+	else {
+		return 'book';
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.MuiGrid-item a[href*="/title/"]:not([data-testid^="format-link"])');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+async function doWeb(doc, url) {
+	if (detectWeb(doc, url) == 'multiple') {
+		let items = await Zotero.selectItems(getSearchResults(doc, false));
+		if (items) {
+			await Promise.all(
+				Object.keys(items)
+					.map(url => requestDocument(url).then(scrape))
+			);
+		}
+	}
+	else {
+		await scrape(doc, url);
+	}
+}
+
+async function scrape(doc, url = doc.location.href) {
+	let record = JSON.parse(text(doc, '#__NEXT_DATA__')).props.pageProps.record;
+	if (!url.includes('/' + record.oclcNumber)) {
+		Zotero.debug('__NEXT_DATA__ is stale; requesting page again');
+		doc = await requestDocument(url);
+		record = JSON.parse(text(doc, '#__NEXT_DATA__')).props.pageProps.record;
+	}
+	scrapeRecord([record]);
+}
+
+function scrapeRecord(records) {
+	for (let record of records) {
+		Z.debug(record);
+
+		if (record.doi) {
+			let translate = Z.loadTranslator('search');
+			translate.setSearch({ DOI: record.doi });
+			translate.setTranslator('b28d0d42-8549-4c6d-83fc-8382874a5cb9'); // DOI Content Negotiation
+			translate.translate();
+			continue;
+		}
+
+		let item = new Zotero.Item(getItemType(record));
+		for (let [key, mapper] of Object.entries(RECORD_MAPPING)) {
+			if (!record[key]) continue;
+			if (typeof mapper == 'string') {
+				item[mapper] = record[key];
+			}
+			else {
+				mapper(item, record[key]);
+			}
+		}
+
+		for (let keyToFix of ['title', 'publisher', 'place']) {
+			if (item[keyToFix]) {
+				item[keyToFix] = item[keyToFix].replace(/^\[(.+)\]$/, '$1');
+			}
+		}
+
+		item.complete();
+	}
+}
+
+function sanitizeInput(items, checkOnly) {
+	if (items.length === undefined || typeof items == 'string') {
+		items = [items];
+	}
+	
+	var cleanItems = [];
+	for (let i = 0; i < items.length; i++) {
+		var item = ZU.deepCopy(items[i]),
+			valid = false;
+		if (item.ISBN && typeof item.ISBN == 'string'
+			&& (item.ISBN = ZU.cleanISBN(item.ISBN))
+		) {
+			valid = true;
+		}
+		else {
+			delete item.ISBN;
+		}
+		
+		if (item.identifiers && typeof item.identifiers.oclc == 'string'
+			&& /^\d+$/.test(item.identifiers.oclc.trim())
+		) {
+			valid = true;
+			item.identifiers.oclc = item.identifiers.oclc.trim();
+		}
+		else if (item.identifiers) {
+			delete item.identifiers.oclc;
+		}
+		
+		if (valid) {
+			if (checkOnly) return true;
+			cleanItems.push(item);
+		}
+	}
+	
+	return checkOnly ? !!cleanItems.length : cleanItems;
+}
+
+function detectSearch(items) {
+	return sanitizeInput(items, true);
+}
+
+function doSearch(items) {
+	items = sanitizeInput(items);
+	if (!items.length) {
+		Z.debug("Search query does not contain valid identifiers");
+		return;
+	}
+	
+	var ids = [], isbns = [];
+	for (let i = 0; i < items.length; i++) {
+		if (items[i].identifiers && items[i].identifiers.oclc) {
+			ids.push(items[i].identifiers.oclc);
+			continue;
+		}
+		
+		isbns.push(items[i].ISBN);
+	}
+	
+	fetchIDs(isbns, ids, function (ids) {
+		if (!ids.length) {
+			Z.debug("Could not retrieve any OCLC IDs");
+			Zotero.done(false);
+			return;
+		}
+		var url = "https://www.worldcat.org/api/search?q=no%3A"
+			+ ids.map(encodeURIComponent).join('+OR+no%3A');
+		ZU.doGet(url, function (respText) {
+			let json = JSON.parse(respText);
+			if (json.briefRecords) {
+				scrapeRecord(json.briefRecords);
+			}
+		});
+	});
+}
+
+function fetchIDs(isbns, ids, callback) {
+	if (!isbns.length) {
+		callback(ids);
+		return;
+	}
+	
+	var isbn = isbns.shift();
+	var url = "https://www.worldcat.org/api/search?q=bn%3A"
+		+ encodeURIComponent(isbn);
+	ZU.doGet(url,
+		function (respText) {
+			let json = JSON.parse(respText);
+			if (json.briefRecords && json.briefRecords.length) {
+				scrapeRecord([json.briefRecords[0]]);
+			}
+		},
+		function () {
+			fetchIDs(isbns, ids, callback);
+		}
+	);
+}

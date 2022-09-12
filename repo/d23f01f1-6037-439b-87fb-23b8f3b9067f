@@ -1,0 +1,126 @@
+const idRe = /(\d+)(?:[?#].*)?$/;
+
+function detectWeb(doc, url) {
+	if (doc.querySelector('#footerLinkVLS') && idRe.test(url)) {
+		let docType = text(doc, '.value.doctypeBase_vlsType');
+		let header = text(doc, '.headertext');
+		if (docType == 'Document' || docType == 'Dokument') {
+			return "document";
+		}
+		else if (docType == 'Journal Article'
+			|| docType == 'Aufsatz in einer Zeitschrift'
+			|| header == 'Journal Article'
+			|| header == 'Aufsatz in einer Zeitschrift') {
+			return "journalArticle";
+		}
+		else if (docType.includes('Thesis') || docType.endsWith('arbeit')) {
+			return "thesis";
+		}
+		else if (doc.querySelector('#mods_name-roleTerm_Recipient')) {
+			return "letter";
+		}
+		else {
+			return "book";
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('#searchResult .metadataTable a.title');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) {
+				ZU.processDocuments(Object.keys(items).map(toTitleInfo), scrape);
+			}
+		});
+	}
+	else {
+		let titleInfoURL = toTitleInfo(url);
+		if (titleInfoURL == url) {
+			scrape(doc, url);
+		}
+		else {
+			ZU.processDocuments(titleInfoURL, scrape);
+		}
+	}
+}
+
+function toTitleInfo(url) {
+	if (url.includes('/titleinfo/')) {
+		return url;
+	}
+	else {
+		return url.replace(/\/(content|periodical)\/[^/]+/, '/$1/titleinfo');
+	}
+}
+
+function scrape(doc, url) {
+	var m = url.match(idRe);
+	if (m) {
+		let id = m[1];
+		let modsURL = `/oai?verb=GetRecord&metadataPrefix=mods&identifier=${id}`;
+		ZU.processDocuments(modsURL, function (respDoc) {
+			let translator = Zotero.loadTranslator("import");
+			// MODS
+			translator.setTranslator("0e2235e7-babf-413c-9acf-f27cce5f059c");
+			translator.setString(respDoc.querySelector('mods').outerHTML);
+			translator.setHandler("itemDone", function (obj, item) {
+				// the MODS translator is eager to return the "document" item
+				// type, but items in these catalogs are almost always books. so
+				// we'll override the translator's guess if needed
+				if (item.itemType == 'document') {
+					item.itemType = detectWeb(doc, url);
+				}
+				
+				if (doc.querySelector('.resourceLink')) {
+					item.attachments.push({
+						title: 'Full Text PDF',
+						mimeType: 'application/pdf',
+						url: `/download/pdf/${id}`
+					});
+				}
+				
+				if (!item.url || item.url.includes('//doi.org/')) {
+					item.url = url.replace(/[?#].*/, '');
+				}
+				
+				cleanItem(item);
+				
+				item.complete();
+			});
+			translator.translate();
+		});
+	}
+}
+
+function cleanItem(item) {
+	if (item.place) {
+		item.place = item.place.replace(/(^\[)|(\]$)/g, '');
+	}
+	
+	if (item.publisher) {
+		item.publisher = item.publisher.replace(/\.\s*$/, '');
+	}
+	
+	if (item.edition) {
+		item.edition = item.edition.replace(/(^\[)|(\]$)/g, '');
+	}
+}

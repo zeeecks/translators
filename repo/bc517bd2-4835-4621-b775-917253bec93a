@@ -1,0 +1,112 @@
+function detectWeb(doc, url) {
+	const isSubject = url.includes("subjects/");
+	if (isSubject && getSearchResults(doc, true)) {
+		return 'multiple';
+	}
+	else if (doc.querySelector('.edition-single--book-title')) {
+		return 'book';
+	} else {
+		return false;
+	}
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), (items) => {
+			if (!items) {
+				return true;
+			}
+			const articles = [];
+			for (const i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+			return true;
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function getSearchResults(doc) {
+	let items = {};
+	let found = false;
+
+	const bookLinkEls = doc.querySelectorAll('.book-grid > .book-card');
+
+	Z.debug(bookLinkEls.length);
+
+	bookLinkEls.forEach((bookLinkEl) => {
+		const titleEl = bookLinkEl.querySelectorAll('div.book-card--title > a')[0];
+
+		const href = titleEl.href;
+		const title = titleEl.textContent;
+
+		items[href] = title;
+		if (found === false) {
+			found = true;
+		}
+	});
+
+	return found ? items : false;
+}
+
+function scrape(doc, _) {
+	const newItem = new Zotero.Item('book');
+
+	newItem.publisher = "Verso Books";
+	const title = text(doc, '.edition-single--book-title');
+	const subtitle = text(doc, '.edition-single--book-subtitle');
+	newItem.title = title + (subtitle ? `: ${subtitle}` : '');
+
+	const contributorsEls = doc.querySelectorAll('.edition-single--book-contributors > span');
+	contributorsEls.forEach((contributorEl) => {
+		const authors = contributorEl.querySelectorAll('a');
+			authors.forEach((authorEl) => {
+				let role = 'author';
+				const isAuthor = authorEl.href.includes('authors');
+				const isEditor = contributorEl.textContent.toLowerCase().includes('edited by');
+				if (isEditor) {
+					role = 'editor';
+				}
+				if (isAuthor) {
+					const authorFullName = authorEl.textContent;
+					newItem.creators.push(ZU.cleanAuthor(authorFullName, role, false));
+				}
+			});
+		// check if translator
+		const spanText = contributorEl.textContent;
+		const isTranslator = spanText.toLowerCase().includes('translated by');
+		if (isTranslator) {
+			const translatorName = spanText.replace('Translated by', '');
+			newItem.creators.push(ZU.cleanAuthor(translatorName, "translator", false));
+		}
+	});
+
+	const description = text(doc, '.edition-single--book-description');
+	if (description) {
+		newItem.abstractNote = description;
+	}
+
+	const detailsText = text(doc, '.edition-single--product-card > .details');
+	if (detailsText.length > 0) {
+		const detailsArray = detailsText.split('/');
+		const pages = detailsArray[0].replace('pages', '');
+		const date = detailsArray[1];
+		const ISBN = detailsArray[2];
+
+		if (pages) {
+			newItem.pages = pages;
+		}
+
+		if (date) {
+			newItem.date = ZU.strToISO(date);
+		}
+
+		if (ISBN) {
+			newItem.ISBN = ZU.cleanISBN(ISBN);
+		}
+	}
+	newItem.complete();
+}

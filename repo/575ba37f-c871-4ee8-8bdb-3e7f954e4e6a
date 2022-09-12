@@ -1,0 +1,54 @@
+function detectWeb(doc, url) { return FW.detectWeb(doc, url); }
+function doWeb(doc, url) { return FW.doWeb(doc, url); }
+ 
+/** Magazine */
+FW.Scraper({
+itemType         : 'magazineArticle',
+detect           : FW.Xpath('//article[@id="article"]//h1[@class="hed"]'),
+title            : FW.Xpath('//article[@id="article"]//h1[@class="hed"]').text().trim(),
+attachments      : [{ url: FW.Url(),
+  title:  "The Atlantic Snapshot",
+  type: "text/html" }],
+creators         : FW.Xpath('//div[@class="article-cover-extra"]//ul[@class="metadata"]/li[@class="byline"]').text().cleanAuthor("author"),
+date             : FW.Xpath('//div[@class="article-cover-extra"]//ul[@class="metadata"]/li[@class="date"]').text(),
+abstractNote     : FW.Xpath('//article//p[@class="dek"]').text().trim(),
+publicationTitle : "The Atlantic",
+ISSN             : "1072-7825"
+}); 
+  
+ 
+/** Magazine Features */
+FW.Scraper({
+itemType         : 'magazineArticle',
+detect           : FW.Xpath('//article[@class="article"]//h1[@class="hed"]'),
+title            : FW.Xpath('//article[@class="article"]//h1[@class="hed"]').text().trim(),
+attachments      : [{ url: FW.Url(),
+  title:  "The Atlantic Snapshot",
+  type: "text/html" }],
+creators         : FW.Xpath('//header//address[@class="byline"]/a').text().cleanAuthor("author"),
+date             : FW.Xpath('//header/time[@class="date"]').text(),
+abstractNote     : FW.Xpath('//article//p[@class="dek"]').text().trim(),
+publicationTitle : "The Atlantic",
+ISSN             : "1072-7825"
+}); 
+  
+ /** Search Results */
+FW.MultiScraper({
+itemType         : 'multiple',
+detect           : FW.Url().match(/search\/\?q=/),
+choices          : {
+  titles :  FW.Xpath('//a[@class="gs-title"]').text().trim(),
+  urls    :  FW.Xpath('//a[@class="gs-title"]').key("href").text()
+}
+}); 
+ 
+
+ /**Blog Landing page*/
+FW.MultiScraper({
+itemType         : 'multiple',
+detect           : FW.Xpath('//div[@id="landing"]//li[contains(@class, "article")]'),
+choices          : {
+  titles :  FW.Xpath('//li[contains(@class, "article")]/a').text().trim(),
+  urls    :  FW.Xpath('//li[contains(@class, "article")]/a').key("href").text()
+}
+});

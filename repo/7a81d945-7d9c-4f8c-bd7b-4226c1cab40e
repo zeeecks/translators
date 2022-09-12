@@ -1,0 +1,94 @@
+function detectWeb(doc, url) {
+	// Dryad search page
+	if (url.indexOf('/discover?') != -1) {
+		return getSearchResults(doc, true) ? 'multiple' : false;
+	} else {
+		var result = ZU.xpathText(doc,'//meta[@name="DC.type"][1]/@content');
+		// Dryad data package
+		if (result === 'Article') {
+			return 'journalArticle';
+		// Dryad data file
+		} else if (result === 'Dataset') {
+			//return 'dataset';
+			return 'journalArticle';
+		}
+	}
+	return false;
+}
+
+function doWeb(doc, url) {
+	var itemType = detectWeb(doc, url);
+	if (itemType === 'journalArticle') {
+		scrape(doc, url);
+	} else if (itemType === 'multiple') {
+		Zotero.selectItems(getSearchResults(doc), function(items) {
+			if (!items) return true;
+			
+			var urls = [];
+			for (var i in items) {
+				urls.push(i);
+			}
+			
+			ZU.processDocuments(urls, scrape);
+		})
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var results = ZU.xpath(doc, '//li[contains(@class,"ds-artifact-item")]/div/a'),
+		items = {},
+		found = false;
+	
+	for (var i=0; i<results.length; i++) {
+		var title = results[i].getElementsByClassName('artifact-title')[0];
+		if (!title) continue;
+		
+		if (checkOnly) return true;
+		found = true;
+		
+		title = ZU.trimInternal(title.textContent).replace(/^Data From:\s*/i, '');
+		items[results[i].href] = title;
+	}
+	
+	return found ? items : false;
+}
+
+function scrape(doc, url) {
+	var package_doi = ZU.xpathText(doc, '//meta[@name="DCTERMS.isPartOf"]/@content');
+	
+	var translator = Zotero.loadTranslator('web');
+	// use the Embedded Metadata translator
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	translator.setHandler('itemDone', function(obj, item) {
+		var itemDoi = item.url.replace(/^.*?doi:/, '');
+		item.DOI = itemDoi;
+		item.url = ''; // the doi value is to be used in lieu of the url
+		
+		item.itemType 	= 'journalArticle';
+		// signal a dataset until supported per
+		// https://www.zotero.org/support/dev/translators/datasets
+		item.extra = 'Type: dataset';
+		item.archive = 'Dryad Digital Repository';
+		item.attachments = [];
+		item.shortTitle = '';
+		
+		// Add a .seeAlso value if this is a page for a single data file,
+		// rather than for a data package collection.
+		// This is a data file if there is a DCTERMS.isPartOf property.
+		if (package_doi && package_doi !== 'doi:' + itemDoi) {
+			item.seeAlso = [package_doi.substring(4)];
+		}
+		item.itemID = itemDoi; // internal value for seeAlso relation
+		
+		item.complete();
+	});
+	translator.translate();
+	
+	// Value for page's possible DCTERMS.isPartOf <meta> tag,
+	// minus the initial 'doi:'.
+	// This value is used to set the seeAlso value for a data-file record.
+	if (package_doi) {
+		ZU.processDocuments('http://datadryad.org/resource/' + package_doi, scrape);
+	}
+}

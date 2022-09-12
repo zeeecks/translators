@@ -1,0 +1,159 @@
+function detectWeb(doc, url) {
+	url = url.replace(/[?#].+/, "");
+	if (/\d{8}$/.test(url) || /\d{7}\.(stm)$/.test(url)) {
+		var pageNode = doc.getElementById("page");
+		if (pageNode) {
+			// Z.debug(pageNode.className);
+			if (pageNode.className.includes("media-asset-page") || pageNode.className.includes("vxp-headlines")) {
+				return "videoRecording";
+			}
+		}
+		return "newspaperArticle";
+	}
+	if (url.includes("/newsbeat/article")) {
+		return "blogPost";
+	}
+	if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//a[h3]');
+	// for NewsBeat
+	if (!rows.length) {
+		rows = ZU.xpath(doc, '//article/div/h1[@itemprop="headline"]/a');
+	}
+	for (let i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (let i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	url = url.replace(/[?#].+/, "");
+	var itemType = detectWeb(doc, url);
+	
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		// add date and time if missing by one of four attempts:
+		// 1. look at the json-ld data
+		// 2. calculate it from the data-seconds attribute
+		// 3. extract it from a nonstandard meta field
+		// 4. for old pages, get from metadata
+		var jsonld = ZU.xpathText(doc, '//script[@type="application/ld+json"]');
+		var data = JSON.parse(jsonld);
+		// Z.debug(data);
+		if (data && data.datePublished) {
+			item.date = data.datePublished;
+		}
+		else {
+			var seconds = ZU.xpathText(doc, '(//div[h1 or h2]//*[contains(@class, "date")]/@data-seconds)[1]');
+			if (!item.date && seconds) {
+				// Z.debug(seconds);
+				var date = new Date(1000 * seconds);
+				item.date = date.toISOString();
+			}
+			else {
+				item.date = ZU.xpathText(doc, '//meta[@property="rnews:datePublished"]/@content');
+				if (!item.date) {
+					item.date = ZU.xpathText(doc, '//p[@class="timestamp"]');
+					if (!item.date) {
+						item.date = ZU.xpathText(doc, '//meta[@name="OriginalPublicationDate"]/@content');
+					}
+				}
+			}
+		}
+		
+		if (item.date) {
+			item.date = ZU.strToISO(item.date);
+		}
+		// delete wrongly attached creators like
+		// "firstName": "B. B. C.", "lastName": "News"
+		item.creators = [];
+		// add authors from byline__name but only if they
+		// are real authors and not just part of the webpage title
+		// like By BBC Trending, By News from Elsewhere... or By Who, What Why
+		var authorString = ZU.xpathText(doc, '//span[@class="byline__name"]');
+		var webpageTitle = ZU.xpathText(doc, '//h1');
+		if (authorString) {
+			authorString = authorString.replace('By', '').replace('...', '');
+			let authors = authorString.split('&');
+			for (let i = 0; i < authors.length; i++) {
+				if (webpageTitle.toLowerCase().includes(authors[i].trim().toLowerCase())) {
+					continue;
+				}
+				item.creators.push(ZU.cleanAuthor(authors[i], "author"));
+			}
+		}
+		else {
+			authorString = ZU.xpathText(doc, '//p[@class="byline"]');
+			var title = ZU.xpathText(doc, '//em[@class="title"]');
+			if (authorString) {
+				authorString = authorString.replace(title, '').replace('By', '');
+				let authors = authorString.split('&');
+				for (let i = 0; i < authors.length; i++) {
+					item.creators.push(ZU.cleanAuthor(authors[i], "author"));
+				}
+			}
+		}
+		
+		if (url.includes("/newsbeat/article")) {
+			item.blogTitle = "BBC Newsbeat";
+		}
+
+		// description for old BBC pages
+		if (!item.abstractNote) {
+			item.abstractNote = ZU.xpathText(doc, '//meta[@name="Description"]/@content');
+		}
+
+		for (let i in item.tags) {
+			item.tags[i] = item.tags[i].charAt(0).toUpperCase() + item.tags[i].substring(1);
+		}
+
+		if (!item.language || item.language === "en") {
+			item.language = "en-GB";
+		}
+
+		if (url.substr(-4) == ".stm") {
+			item.title = ZU.xpathText(doc, '//meta[@name="Headline"]/@content');
+		}
+
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = itemType;
+		trans.doWeb(doc, url);
+	});
+}

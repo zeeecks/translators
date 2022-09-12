@@ -1,0 +1,73 @@
+function detectWeb(doc, url) {
+	if (ZU.xpathText(doc, '//meta[@property="og:type"]/@content')=="article" ){ 
+		return "newspaperArticle";
+	} else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+
+	var rows = ZU.xpath(doc, '//div[contains(@class, "first_page") or contains(@class, "searchresults")]//a[h3 or h4]');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	//translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		item.publicationTitle = "Die Tageszeitung: taz";
+		item.ISSN = "0931-9085";
+		item.section = ZU.xpathText(doc, '//ul[contains(@class, "navbar")]/li[contains(@class, "selected")]');
+		//sometimes taz puts itself as author
+		for (var i=0; i<item.creators.length; i++) {
+			if (item.creators[i].firstName && item.creators[i].lastName && item.creators[i].firstName == "taz die" && item.creators[i].lastName == "tageszeitung") {
+				item.creators.splice(i, 1);
+			}
+		}
+		
+		item.pages = ZU.xpathText(doc, '//div[contains(@class, "print-page")]//ul[contains(@class, "right")]/li[contains(@class, "page")]');
+		if (item.pages) {
+			item.pages = item.pages.replace('S.', '');
+		}
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function(trans) {
+		trans.itemType = "newspaperArticle";
+		trans.doWeb(doc, url);
+	});
+}

@@ -1,0 +1,61 @@
+function detectWeb(doc, url) {
+	if (url.search(/vol\d+\/default\.htm|search\/search\.aspx\?/)!=-1){
+		return "multiple";	
+	}
+	else if (ZU.xpathText(doc, '//a[contains(@href, "/refman.plx?")]/@href')){
+		return "journalArticle";	
+	}
+}
+
+function doWeb(doc, url) {
+	var arts = [];
+	if (detectWeb(doc, url) == "multiple") {
+		var items = {};
+		var title;
+
+		var titles = doc.evaluate('//p[@class="articles_title"]/a|//div[@class="result_title"]/a', doc, null, XPathResult.ANY_TYPE, null);
+		var link;
+		while (title = titles.iterateNext()) {
+			//search results routinely go to PDFs instead of item pages. Fixing that here
+			link = title.href.replace(/\d+\-\d+\.pdf.*/, "");
+			items[link] = title.textContent;
+		}
+	
+		Zotero.selectItems(items, function (items) {
+			if (!items) {
+				return true;
+			}
+			for (var i in items) {
+				arts.push(i);
+			}
+			Zotero.Utilities.processDocuments(arts, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var get = ZU.xpathText(doc, '//a[contains(@href, "/refman.plx?")]/@href');
+	//Z.debug(get)
+	ZU.HTTP.doGet(get, function (text) {
+		//The DOI is saved in N1 - fix that
+		text = text.replace(/N1  - /, "DO  - ");
+		//Z.debug(text);
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(text);
+		translator.setHandler("itemDone", function (obj, item) {
+			item.ISSN = "1435-9871";
+			var pdfurl = item.url + item.volume + "-" + item.issue + ".pdf";
+			//Z.debug(pdfurl)
+			item.attachments.push({
+				url: pdfurl,
+				title: "Demographic Research Full Text PDF",
+				mimeType: "application/pdf"
+			});
+			item.complete();
+		});
+		translator.translate();
+	});
+}

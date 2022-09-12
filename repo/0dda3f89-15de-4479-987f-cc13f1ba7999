@@ -1,0 +1,59 @@
+function detectWeb(doc, url) {
+	if (text(doc, '.pageTitle .pageIntro a').includes('United States Federal Census')) {
+		return "bookSection";
+	}
+	return false;
+}
+
+function doWeb(doc, url) {
+	scrape(doc, url);
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item('bookSection');
+	
+	item.title = text(doc, '.pageTitle span');
+	let [date, place, roll, page] = doc.querySelectorAll('.sourceText em'); // not ideal
+	item.bookTitle = text(doc, '.pageTitle .pageIntro a').trim()
+		+ ` [${place.textContent}]`;
+	item.publisher = 'National Archives and Records Administration';
+	// technically the Census is published 72 years after it's taken, but citing
+	// that way doesn't seem to be the convention.
+	item.date = date.textContent;
+	item.pages = `${page.textContent} (roll ${roll.textContent})`;
+	item.archive = 'Ancestry.com';
+	item.url = url.replace(/[?#].*/, '');
+	
+	let recordTable = doc.querySelector('#recordServiceData');
+	if (recordTable) {
+		recordTable = recordTable.cloneNode(true);
+		
+		let familyMembers = recordTable.querySelector('.tableContainerRow');
+		if (familyMembers) familyMembers.remove();
+		
+		item.notes.push({
+			note: ZU.trimInternal(recordTable.outerHTML)
+		});
+	}
+
+	let imageSrc = attr(doc, '.photo.clickable img', 'src');
+	let dbId = imageSrc.match(/\/namespaces\/([^/]+)/)[1];
+	let imageId = imageSrc.match(/([^/]+)\.jpg/)[1];
+	ZU.doGet(
+		`/imageviewer/api/media/token?dbId=${dbId}&imageId=${imageId}`,
+		function (respText) {
+			try {
+				let json = JSON.parse(respText);
+				item.attachments.push({
+					title: 'Census Record',
+					mimeType: 'image/jpeg',
+					url: json.imageDownloadUrl
+				});
+				item.complete();
+			}
+			catch (_) {
+				item.complete(); // whatever, this is fragile
+			}
+		}
+	);
+}

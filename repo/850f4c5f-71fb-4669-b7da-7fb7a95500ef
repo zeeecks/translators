@@ -1,0 +1,135 @@
+function detectWeb(doc, url) {
+	// if one of these strings is in the URL, we're almost definitely on a listing
+	// page and should immediately return "multiple" if the page contains any
+	// results. the checks below (particularly url.includes('/books/')) might
+	// falsely return true and lead to an incorrect detection if we continue.
+	let multiples = /\/search\?|\/listing\?|\/issue\//;
+	if (multiples.test(url) && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	if (url.includes('/article/')) {
+		return "journalArticle";
+	}
+	if (url.includes('/books/')) {
+		if (doc.getElementsByClassName('chapter-wrapper').length > 0) {
+			return "bookSection";
+		}
+		else return "book";
+	}
+	
+	// now let's check for multiples again, just to be sure. this handles some
+	// rare listing page URLs that might not be included in the multiples
+	// regex above.
+	if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll(
+		'li.title a[href*="/article/"], li.title a[href*="/product/"], li.title a[href*="/books/"]'
+	);
+	for (let row of rows) {
+		var href = row.href;
+		var title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (let i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	// Book metadata is much better using RIS
+	if (detectWeb(doc, url) == "book" || detectWeb(doc, url) == "bookSection") {
+		let productID = url.replace(/[#?].+/, "").match(/\/([^/]+)$/)[1];
+		let risURL
+			= "/core/services/aop-easybib/export?exportType=ris&productIds="
+			+ productID + "&citationStyle=apa";
+		// Z.debug(risURL);
+		// the attribute sometimes has a space in it, so testing for contains
+		var pdfURL = ZU.xpathText(doc,
+			'//meta[contains(@name, "citation_pdf_url")]/@content'
+		);
+		// Z.debug("pdfURL: " + pdfURL);
+		ZU.doGet(risURL, function (text) {
+			var translator = Zotero.loadTranslator(
+				"import");
+			translator.setTranslator(
+				"32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+			translator.setString(text);
+			translator.setHandler("itemDone", function (obj,
+				item) {
+				if (pdfURL) {
+					item.attachments.push({
+						url: pdfURL,
+						title: "Full Text PDF",
+						mimeType: "application/pdf"
+					});
+				}
+				item.attachments.push({
+					title: "Snapshot",
+					document: doc
+				});
+				// don't save Cambridge Core to archive
+				item.archive = "";
+				item.complete();
+			});
+			translator.translate();
+		});
+	}
+	// Some elements of journal citations look better with EM
+	else {
+		var translator = Zotero.loadTranslator('web');
+		// Embedded Metadata
+		translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+		translator.setHandler('itemDone', function (obj, item) {
+			item.url = url;
+			var abstract = ZU.xpathText(doc,
+				'//div[@class="abstract"]');
+			if (abstract) {
+				item.abstractNote = abstract;
+			}
+			item.title = ZU.unescapeHTML(item.title);
+			item.libraryCatalog = "Cambridge University Press";
+			if (item.date.includes("undefined")) {
+				item.date = attr('meta[name="citation_online_date"]', "content");
+			}
+			item.complete();
+		});
+
+		translator.getTranslatorObject(function (trans) {
+			if (url.includes("/books")) {
+				trans.itemType = "book";
+			}
+			else {
+				trans.itemType = "journalArticle";
+			}
+			trans.doWeb(doc, url);
+		});
+	}
+}

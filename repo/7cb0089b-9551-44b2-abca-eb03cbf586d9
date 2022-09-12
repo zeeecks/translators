@@ -1,0 +1,71 @@
+function detectWeb(doc, url) {
+  if (url.match(/\/doi\/abs\/10\.|\/doi\/full\/10\./))	return "journalArticle";
+  else if (url.match(/\/action\/doSearch|\/toc\//))	return "multiple";
+}
+
+
+function doWeb(doc, url) {
+  var namespace = doc.documentElement.namespaceURI;
+  var nsResolver = namespace ? function(prefix) {
+	if (prefix == 'x') return namespace; else return null;
+		} : null;
+  var arts = new Array();
+  if (detectWeb(doc, url) == "multiple") {
+	var items = new Object();
+	var rows = ZU.xpath(doc, '//div[@class="searchEntry"]');
+	for (var i in rows) {
+	 var title = ZU.xpathText(rows[i], './/h4[@class="searchTitle"]');
+			var id = ZU.xpath(rows[i], './/p[@class="searchEntryTools"]/a')[0].href;
+			items[id] = title;
+	}
+		Zotero.selectItems(items, function(items){
+			 if (!items) {
+			   return true;
+			 }
+			 citationurls = new Array();
+			 for (var itemurl in items) {
+			 	//Z.debug(itemurl)
+			 	//some search results have some "baggage" at the end - remove
+			   citationurls.push(itemurl.replace(/\?prev.+/, "").replace(/\/doi\/abs\//, "/action/showCitFormats?doi="));
+			 }
+			 getpages(citationurls);
+			   });
+
+  } else {
+	var citationurl = url.replace(/\?.+/, "").replace(/\/doi\/abs\/|\/doi\/full\//, "/action/showCitFormats?doi=");
+	//Z.debug(citationurl)
+	getpages(citationurl);
+  }
+}
+
+function getpages(citationurl) {
+	//we work entirely from the citations page
+  Zotero.Utilities.processDocuments(citationurl, scrape);
+}
+
+function scrape (doc) {
+  var newurl = doc.location.href;
+  var pdfurl = newurl.replace(/\/action\/showCitFormats\?doi=/, "/doi/pdf/");
+  var absurl = newurl.replace(/\/action\/showCitFormats\?doi=/, "/doi/abs/");
+  var doi = ZU.xpathText(doc, '//form/input[@name="doi"]/@value')
+  var filename = ZU.xpathText(doc, '//form/input[@name="downloadFileName"]');
+  var get = 'http://www.bioone.org/action/downloadCitation';
+  var post = 'doi=' + doi + '&downloadFileName=' + filename + '&format=ris&direct=true&include=cit';
+   Zotero.Utilities.HTTP.doPost(get, post, function(text) {
+  	//Z.debug(text)
+	var translator = Zotero.loadTranslator("import");
+	// Calling the RIS translator
+	translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+	translator.setString(text);
+	translator.setHandler("itemDone", function(obj, item) {
+		item.url = absurl;
+		item.notes = [];
+		item.attachments = [
+			{url:pdfurl, title:"BioOne PDF fulltext", mimeType:"application/pdf"},
+			{url:absurl, title:"BioOne Snapshot", mimeType:"text/html"}
+		];
+		item.complete();
+	});
+	translator.translate();
+  });
+}

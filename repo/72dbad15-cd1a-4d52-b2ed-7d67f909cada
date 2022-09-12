@@ -1,0 +1,101 @@
+function detectWeb(doc, url) {
+	if (ZU.xpathText(doc, '//div[contains(@class, "collection-details__tombstone")]')) {
+		return 'artwork';
+	}
+	//multiples are working when waiting for the website to load completely,
+	//but automatic testing seems difficult, try manually e.g.
+	//http://metmuseum.org/art/collection?ft=albrecht+d%C3%BCrer&noqs=true
+	if (getSearchResults(doc, true)) return 'multiple';
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//h2[contains(@class, "card__title")]/a');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var item = new Zotero.Item('artwork');
+	item.title = ZU.xpathText(doc, '//h1');
+	
+	var meta = ZU.xpath(doc, '//div[contains(@class, "collection-details__tombstone")]/dl')
+	for (var i=0; i<meta.length; i++) {
+		var heading = ZU.xpathText(meta[i], './dt[contains(@class, "label")]');
+		heading = heading.toLowerCase().substr(0, heading.length-1);
+		var content = ZU.xpathText(meta[i], './dd[contains(@class, "value")]');
+		//Z.debug(heading + content)
+
+		switch (heading) {
+			case 'date':
+			case 'medium':
+				item[heading] = content;
+				break;
+			case 'dimensions':
+				item.artworkSize = content;
+				break;
+			case 'accession number':
+				item.callNumber = content;
+				break;
+			case 'classification':
+			case 'period':
+			case 'culture':
+				item.tags.push(content);
+				break;
+			case 'artist':
+				var cleaned = content.replace(/\(.*\)$/, '').trim();
+				if (cleaned.split(' ').length>2) {
+					item.creators.push({'lastName': content, 'creatorType': 'artist', 'fieldMode': 1})
+				} else {
+					item.creators.push(ZU.cleanAuthor(cleaned, "artist"));
+				}
+				break;
+		}
+	} 
+	
+	item.abstractNote = ZU.xpathText(doc, '//div[contains(@class, "collection-details__label")]');
+	item.libraryCatalog = 'The Metropolitan Museum of Art';
+	item.url = ZU.xpathText(doc, '//link[@rel="canonical"]/@href');
+	
+	var download = ZU.xpathText(doc, '//li[contains(@class, "utility-menu__item--download")]/a/@href');
+	if (download) {
+		item.attachments.push({
+			title: 'Met Image',
+			url: download
+		});
+	}
+	item.attachments.push({
+		title: 'Snapshot',
+		document: doc
+	});
+	
+	item.complete();
+}

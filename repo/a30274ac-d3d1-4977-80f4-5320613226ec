@@ -1,0 +1,113 @@
+function detectWeb(doc, url) {
+	if (url.includes('/title/tt') && doc.querySelector('script[type="application/ld+json"]')) {
+		let json = JSON.parse(text(doc, 'script[type="application/ld+json"]'));
+		if (json['@type'] == 'TVEpisode') {
+			return 'tvBroadcast';
+		}
+		else {
+			return "film";
+		}
+	}
+	else if (url.includes('/find?') && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//td[contains(@class, "result_text")]');
+	for (let i = 0; i < rows.length; i++) {
+		var href = ZU.xpathText(rows[i], './a/@href');
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, _url) {
+	let json = JSON.parse(text(doc, 'script[type="application/ld+json"]'));
+	var item = new Zotero.Item(
+		json['@type'] == 'TVEpisode'
+			? 'tvBroadcast'
+			: 'film');
+	
+	item.title = json.name; // note that json only has the original title
+	var transTitle = ZU.trimInternal(ZU.xpathText(doc, "//h1/text()"));
+	if (transTitle && transTitle !== item.title) addExtra(item, "Translated title: " + transTitle);
+	
+	item.programTitle = doc.title.match(/(?:"([^"]+)")?/)[1];
+	let episodeNumberParts = doc.querySelectorAll('[class*="EpisodeNavigationForTVEpisode__SeasonEpisodeNumbersItem"]');
+	item.episodeNumber = [...episodeNumberParts].map(el => el.textContent.trim()).join(' ');
+	
+	item.date = json.datePublished;
+	item.runningTime = "duration" in json ? json.duration.replace("PT", "").toLowerCase() : "";
+	item.genre = Array.isArray(json.genre) ? json.genre.join(", ") : json.genre;
+	item.abstractNote = json.description;
+	var creatorsMapping = {
+		director: "director",
+		creator: "scriptwriter",
+		actor: ZU.fieldIsValidForType("castMember", item.itemType)
+			? "castMember"
+			: "contributor"
+	};
+	for (var role in creatorsMapping) {
+		if (!json[role]) continue;
+		var creators = json[role];
+		if (!Array.isArray(creators)) {
+			item.creators.push(ZU.cleanAuthor(creators.name, creatorsMapping[role]));
+		}
+		else {
+			for (var i = 0; i < creators.length; i++) {
+				if (creators[i]["@type"] == "Person") item.creators.push(ZU.cleanAuthor(creators[i].name, creatorsMapping[role]));
+			}
+		}
+	}
+	let companyNodes = doc.querySelectorAll('a[href*="/company/"]');
+	let companies = [];
+	for (let company of companyNodes) {
+		companies.push(company.textContent);
+	}
+	item.distributor = companies.join(', ');
+	var pageId = attr(doc, 'meta[property="imdb:pageConst"]', 'content');
+	if (pageId) {
+		addExtra(item, "IMDb ID: " + pageId);
+	}
+	let locationLinks = doc.querySelectorAll('a[href*="title/?country_of_origin"]');
+	addExtra(item, "event-location: "
+		+ [...locationLinks].map(a => a.innerText).join(', '));
+	item.tags = "keywords" in json ? json.keywords.split(",") : [];
+	item.complete();
+}
+
+function addExtra(item, value) {
+	if (!item.extra) {
+		item.extra = '';
+	}
+	else {
+		item.extra += "\n";
+	}
+	item.extra += value;
+}

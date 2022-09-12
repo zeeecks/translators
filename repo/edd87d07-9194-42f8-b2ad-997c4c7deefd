@@ -1,0 +1,63 @@
+function detectImport() {
+	var line;
+	var i = 0;
+	while ((line = Zotero.read()) !== false) {
+		if (line !== "") {
+			if (line.match(/xmlns(:marc)?="http:\/\/www\.loc\.gov\/MARC21\/slim"/)) {
+				return true;
+			}
+			else if (i++ > 5) {
+				return false;
+			}
+		}
+	}
+	return false;
+}
+
+
+function doImport() {
+	var text = "";
+	var line;
+	while ((line = Zotero.read()) !== false) {
+		text += line;
+	}
+	// call MARC translator
+	var translator = Zotero.loadTranslator("import");
+	translator.setTranslator("a6ee60df-1ddc-4aae-bb25-45e0537be973");
+	translator.getTranslatorObject(function (marc) {
+		var parser = new DOMParser();
+		var xml = parser.parseFromString(text, 'text/xml');
+		// define the marc namespace
+		var ns = {
+			marc: "http://www.loc.gov/MARC21/slim"
+		};
+		var records = ZU.xpath(xml, '//marc:record', ns);
+		for (let rec of records) {
+			// create one new item per record
+			var record = new marc.record();
+			var newItem = new Zotero.Item();
+			record.leader = ZU.xpathText(rec, "./marc:leader", ns);
+			var fields = ZU.xpath(rec, "./marc:datafield", ns);
+			for (let field of fields) {
+				// go through every datafield (corresponds to a MARC field)
+				var subfields = ZU.xpath(field, "./marc:subfield", ns);
+				var tag = "";
+				for (let subfield of subfields) {
+					// get the subfields and their codes...
+					var code = ZU.xpathText(subfield, "./@code", ns);
+					var sf = ZU.xpathText(subfield, "./text()", ns);
+					// delete non-sorting symbols
+					// e.g. &#152;Das&#156; Adam-Smith-Projekt
+					if (sf) {
+						sf = sf.replace(/[\x80-\x9F]/g, "");
+						// concat all subfields in one datafield, with subfield delimiter and code between them
+						tag = tag + marc.subfieldDelimiter + code + sf;
+					}
+				}
+				record.addField(ZU.xpathText(field, "./@tag", ns), ZU.xpathText(field, "./@ind1", ns) + ZU.xpathText(field, "./@ind2"), tag);
+			}
+			record.translate(newItem);
+			newItem.complete();
+		}
+	}); // get Translator end
+}

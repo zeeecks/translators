@@ -1,0 +1,273 @@
+/*
+ 	***** BEGIN LICENSE BLOCK *****
+ 	
+ 	Copyright © 2015 Philipp Zumstein
+ 	
+ 	This file is part of Zotero.
+ 	
+ 	Zotero is free software: you can redistribute it and/or modify
+ 	it under the terms of the GNU Affero General Public License as published by
+ 	the Free Software Foundation, either version 3 of the License, or
+ 	(at your option) any later version.
+ 	
+ 	Zotero is distributed in the hope that it will be useful,
+ 	but WITHOUT ANY WARRANTY; without even the implied warranty of
+ 	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ 	GNU Affero General Public License for more details.
+ 	
+ 	You should have received a copy of the GNU Affero General Public License
+ 	along with Zotero. If not, see <http://www.gnu.org/licenses/>.
+ 	
+ 	***** END LICENSE BLOCK *****
+ */
+ 
+  
+/** ***************************
+  * General utility functions *
+  *****************************/
+
+function lookupPMIDs(ids) {
+	var newUri = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?"
+		+ "db=PubMed&tool=Zotero&retmode=xml&rettype=citation&id=" + ids.join(",");
+	// Zotero.debug(newUri);
+	Zotero.Utilities.HTTP.doGet(newUri, function (text) {
+		if (!text.includes('PubmedArticle') && !text.includes('PubmedBookArticle')) { // e.g. http://www.ncbi.nlm.nih.gov/pubmed/1477919937
+			throw new Error("No Pubmed Data found - Most likely eutils is temporarily down");
+		}
+		
+		// call the import translator
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("fcf41bed-0cbc-3704-85c7-8062a0068a7a");
+		translator.setString(text);
+		translator.translate();
+	});
+}
+
+
+/** **************************
+ * Web translator functions *
+ ****************************/
+// retrieves the UID from an item page. Returns false if there is more than one.
+function getUID(doc) {
+	var uid = ZU.xpath(doc, 'html/head/meta[@name="ncbi_uidlist" or @name="ncbi_article_id" or @name="uid"]/@content');
+	if (!uid.length) {
+		uid = ZU.xpath(doc, '//input[@id="absid"]/@value');
+	}
+
+	if (uid.length == 1 && uid[0].textContent.search(/^\d+$/) != -1) {
+		return uid[0].textContent;
+	}
+	
+	uid = ZU.xpath(doc, 'html/head/link[@media="handheld"]/@href');
+	if (!uid.length) uid = ZU.xpath(doc, 'html/head/link[@rel="canonical"]/@href'); // mobile site
+	if (uid.length == 1) {
+		uid = uid[0].textContent.match(/\/(\d+)(?:\/|$)/);
+		if (uid) return uid[1];
+	}
+	
+	// PMID from a bookshelf entry
+	var maincontent = doc.getElementById('maincontent');
+	if (maincontent) {
+		uid = ZU.xpath(maincontent,
+			'.//a[@title="PubMed record of this title" or @title="PubMed record of this page"]');
+		if (uid.length == 1 && uid[0].textContent.search(/^\d+$/) != -1) return uid[0].textContent;
+	}
+
+	return false;
+}
+
+// retrieve itemprop elements for scraping books directly from page where UID is not available
+function getBookProps(doc) {
+	var main = doc.getElementById('maincontent');
+	if (!main) return false;
+	var itemprops = ZU.xpath(main, './/div[@itemtype="http://schema.org/Book"]//*[@itemprop]');
+	return itemprops.length ? itemprops : null;
+}
+
+// itemprop to Zotero field map
+var bookRDFaMap = {
+	name: 'title',
+	bookEdition: 'edition',
+	author: 'creator/author',
+	publisher: 'publisher',
+	datePublished: 'date',
+	isbn: 'ISBN',
+	description: 'abstractNote'
+};
+
+function scrapeItemProps(itemprops) {
+	var item = new Zotero.Item('book');
+	for (var i = 0; i < itemprops.length; i++) {
+		var value = ZU.trimInternal(itemprops[i].textContent);
+		var field = bookRDFaMap[itemprops[i].getAttribute('itemprop')];
+		if (!field) continue;
+		
+		if (field.indexOf('creator/') == 0) {
+			field = field.substr(8);
+			item.creators.push(ZU.cleanAuthor(value, field, false));
+		}
+		else if (field == 'ISBN') {
+			if (!item.ISBN) item.ISBN = '';
+			else item.ISBN += '; ';
+			
+			item.ISBN += value;
+		}
+		else {
+			item[field] = value;
+		}
+	}
+	item.complete();
+}
+
+/**
+ * Handles:
+ * search results: http://www.ncbi.nlm.nih.gov/pubmed/?term=cell
+ * NCBI collections; http://www.ncbi.nlm.nih.gov/myncbi/browse/collection/40383442/?sort=&direction=
+ * My Bibliography
+ */
+function getSearchResults(doc, checkOnly) {
+	var results = doc.querySelectorAll('.rslt, .docsum-wrap, .citation-wrap, citationListItem');
+	var items = {}, found = false;
+
+	if (!results.length) return false;
+	for (var i = 0; i < results.length; i++) {
+		var title = ZU.xpathText(results[i], '(.//p[@class="title"]|.//h1)[1]')
+			|| ZU.xpathText(results[i], './/a[@class="docsum-title"]')
+			|| ZU.xpathText(results[i], './/div[@class="ncbi-docsum"]/a'); // My Bibliography
+
+		var uid = ZU.xpathText(results[i], './/input[starts-with(@id,"UidCheckBox")]/@value')
+			|| ZU.xpathText(results[i], './/div[contains(@class, "docsum-citation")]//span[@class="docsum-pmid"]')
+			|| ZU.xpathText(results[i], './div[@class="citation"]//input/@pmid') // My Bibliography
+			||			ZU.xpathText(results[i], './/dl[@class="rprtid"]/dd[preceding-sibling::*[1][text()="PMID:"]]');
+
+		if (!uid) {
+			uid = ZU.xpathText(results[i], './/p[@class="title"]/a/@href');
+			if (uid) uid = uid.match(/\/(\d+)/);
+			if (uid) uid = uid[1];
+		}
+
+		if (!uid || !title) continue;
+
+		if (checkOnly) return true;
+		found = true;
+
+		// Checkbox is a descendant of the containing .rprt div
+		var checkbox = ZU.xpath(results[i].parentNode, './/input[@type="checkbox"]')[0];
+
+		// Keys must be strings. Otherwise, Chrome sorts numerically instead of by insertion order.
+		items["u" + uid] = {
+			title: ZU.trimInternal(title),
+			checked: checkbox && checkbox.checked
+		};
+	}
+	return found ? items : false;
+}
+
+function detectWeb(doc, url) {
+	if (getSearchResults(doc, true) && !url.includes("/books/")) {
+		return "multiple";
+	}
+	
+	if (!getUID(doc)) {
+		if (getBookProps(doc)) return 'book';
+		// if we can't get the UID or the book itemprops, we can't import
+		else return false;
+	}
+	
+	// try to determine if this is a book
+	// "Sections" heading only seems to show up for books
+	var maincontent = doc.getElementById('maincontent');
+	if (maincontent && ZU.xpath(maincontent, './/div[@class="sections"]').length) {
+		var inBook = ZU.xpath(maincontent, './/div[contains(@class, "aff_inline_book")]').length;
+		return inBook ? "bookSection" : "book";
+	}
+
+	// determine if book or bookSection for PubMed Labs
+	var bookCitation = doc.getElementsByClassName('book-citation');
+	if (bookCitation.length > 0 && ZU.xpath(doc, './/div[@class="affiliations"]')) {
+		// For a bookSection there is the affiliations section of the authors of this
+		// section as well as another affiliation sections for the book authors.
+		var isChapter = doc.querySelectorAll('#full-view-heading div.affiliations').length > 1;
+		return isChapter ? "bookSection" : "book";
+	}
+	
+	// from bookshelf page
+	var pdid = ZU.xpathText(doc, 'html/head/meta[@name="ncbi_pdid"]/@content');
+	if (pdid == "book-part") return 'bookSection';
+	if (pdid == "book-toc") return 'book';
+	
+	return "journalArticle";
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc), function (selectedItems) {
+			if (!selectedItems) return;
+
+			var uids = [];
+			for (var i in selectedItems) {
+				uids.push(i.substr(1));
+			}
+			lookupPMIDs(uids);
+		});
+	}
+	else {
+		var uid = getUID(doc);
+		if (uid) {
+			lookupPMIDs([uid]);
+		}
+		else {
+			var itemprops = getBookProps(doc);
+			if (itemprops) {
+				scrapeItemProps(itemprops);
+			}
+		}
+	}
+}
+
+
+/** *****************************
+ * Search translator functions *
+ *******************************/
+// extract PMID from a context object
+function getPMID(co) {
+	var coParts = co.split("&");
+	for (var i = 0; i < coParts.length; i++) {
+		var part = coParts[i];
+		if (part.substr(0, 7) == "rft_id=") {
+			var value = decodeURIComponent(part.substr(7));
+			if (value.substr(0, 10) == "info:pmid/") {
+				return value.substr(10);
+			}
+		}
+	}
+	return false;
+}
+
+function detectSearch(item) {
+	if (item.contextObject) {
+		if (getPMID(item.contextObject)) {
+			return true;
+		}
+	}
+	
+	// supply PMID as a string or array
+	if (item.PMID
+		&& (typeof item.PMID == 'string' || item.PMID.length > 0)) {
+		return true;
+	}
+	
+	return false;
+}
+
+function doSearch(item) {
+	var pmid;
+	if (item.contextObject) {
+		pmid = getPMID(item.contextObject);
+	}
+	if (!pmid) pmid = item.PMID;
+	
+	if (typeof pmid == "string") pmid = [pmid];
+	
+	lookupPMIDs(pmid);
+}

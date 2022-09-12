@@ -1,0 +1,232 @@
+function detectWeb(doc, url) {
+	if (url.includes('/archive/') && doc.querySelector('.page-title h1')) {
+		let type = text(doc, 'a[href*="source_content_type"]').toLowerCase();
+		switch (type) {
+			case 'archival file':
+			case 'ملف أرشيفي':
+			case 'archival item':
+			case 'مادة أرشيفية':
+			case 'letter book':
+			case 'مجلد مراسلات':
+			case 'book':
+			case 'كتب':
+			case 'volume':
+			case 'مجلد':
+			case 'diary':
+			case 'مذكرات':
+			case 'journal':
+			case 'دورية':
+				return 'book';
+			case 'letter':
+			case 'رسالة':
+				return 'letter';
+			case 'map':
+			case 'خرائط':
+			case 'plan':
+			case 'خريطة':
+				return 'map';
+			case 'photograph':
+			case 'صورة فوتوغرافية':
+			case 'drawing':
+			case 'رسم تخطيطي':
+			case 'illustration':
+			case 'رسم':
+			case 'painting':
+			case 'لوحة':
+			case 'print':
+			case 'مطبوعة':
+			case 'diagram':
+			case 'رسم توضيحي':
+			case 'رسم بياني':
+				return 'artwork';
+			case 'manuscript item':
+			case 'مادة من مخطوطة':
+			case 'manuscript':
+			case 'مخطوطة':
+			case 'مخطوطات':
+			case 'note':
+			case 'مذكرة':
+				return 'manuscript';
+			case 'report':
+			case 'تقرير':
+				return 'report';
+			case 'list':
+			case 'قائمة':
+			case 'statistical table':
+			case 'جدول إحصاء':
+			case 'certificate':
+			case 'شهادة':
+			case 'appendix':
+			case 'ملحق':
+				return 'document';
+			case 'newspaper clipping':
+			case 'قصاصة صحفية':
+			case 'newspaper article':
+			case 'مقال صحفي':
+				return 'newspaperArticle';
+			case 'journal article':
+			case 'مقال':
+				return 'journalArticle';
+			default:
+				Z.debug('Unmapped type: ' + type);
+				return 'document';
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('h3 > a[href*="/archive/"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item(detectWeb(doc, url));
+	item.extra = '';
+	
+	let iiifURL = attr(doc, 'a.iiif_link', 'href');
+	ZU.doGet(iiifURL, function (respText) {
+		let json = JSON.parse(respText);
+		
+		item.title = json.label['@value'].replace(/(^')|('$)/g, '');
+		item.abstractNote = ZU.trimInternal(json.description['@value']);
+		
+		for (let meta of json.metadata) {
+			addMetadata(item, meta.label['@value'], meta.value['@value']);
+		}
+		
+		for (let labelElem of doc.querySelectorAll('dt')) {
+			let label = labelElem.innerText.trim();
+			let value = labelElem.nextSibling.innerText;
+			let rawValue = labelElem.nextSibling.innerHTML;
+			
+			addMetadataFromPage(item, label, value, rawValue);
+		}
+		
+		let pdfLink = doc.querySelector('.pdf-download a');
+		if (pdfLink) {
+			let pdfLinkText = pdfLink.innerText
+				.replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d));
+			if ((pdfLinkText.match(/(\d+) (MB|ميجإبايت)/) || [])[1] < 100) {
+				item.attachments.push({
+					title: 'Full Text PDF',
+					mimeType: 'application/pdf',
+					url: pdfLink.href
+				});
+			}
+			else {
+				// if the PDF is huge, just send an empty URL to get the red X
+				// and explain in the attachment title field
+				item.attachments.push({
+					title: 'Full Text PDF (too large)',
+					mimeType: 'application/pdf',
+					url: ''
+				});
+			}
+		}
+		
+		item.complete();
+	});
+}
+
+function addMetadata(item, label, value) {
+	switch (label) {
+		case 'Qatar Digital Library link':
+		case 'رابط مكتبة قطر الرقمية':
+			item.url = (value.match(/https?:\/\/[^"]+/) || [])[0];
+			break;
+		case 'Original held at':
+		case 'الأصل محفوظ في':
+			item.archive = value;
+			break;
+		case 'Archive reference':
+		case 'رقم الاستدعاء':
+			item.archiveLocation = value;
+			break;
+		case 'Original language':
+		case 'اللغة الأصلية':
+			item.language = value;
+			break;
+		case 'Date':
+		case 'التاريخ':
+			item.date = ZU.strToISO(value);
+			break;
+		case 'Arrangement':
+		case 'Physical characteristics':
+		case 'الترتيب':
+		case 'الخصائص المادية':
+			item.notes.push({ note: cleanNote(value) });
+			break;
+		case 'Type':
+			// Type metadata from page is better
+			break;
+		default:
+			Z.debug(`Unknown metadata: ${label} = ${value}`);
+	}
+}
+
+function addMetadataFromPage(item, label, value, rawValue) {
+	switch (label) {
+		case 'Content':
+		case 'المحتوى':
+			item.notes.push({ note: cleanNote(rawValue) });
+			break;
+		case 'Author':
+		case 'المؤلف':
+			if (value.includes('Please see item description')
+				|| value.startsWith('Unknown')) {
+				break;
+			}
+			
+			item.creators.push({
+				lastName: value,
+				creatorType: 'author',
+				fieldMode: 1
+			});
+			
+			break;
+		case 'Usage terms':
+		case 'شروط الاستخدام':
+			item.rights = value;
+			break;
+		case 'Degree coordinates':
+		case 'الإحداثيات':
+			item.notes.push({ note: `<h1>Map coordinates</h1>\n${rawValue}` });
+			break;
+		case 'Type':
+		case 'النوع':
+			item.extra += `Genre: ${value}\n`;
+			break;
+	}
+}
+
+function cleanNote(note) {
+	return note.trim()
+		.replace(/\n\s+/g, '\n')
+		.replace(/class="RightToLeft"/g, 'dir="rtl"')
+		.replace(/class="LeftToRight"/g, 'dir="ltr"');
+}

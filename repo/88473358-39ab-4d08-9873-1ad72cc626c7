@@ -1,0 +1,107 @@
+let preprintType = ZU.fieldIsValidForType('title', 'preprint')
+	? 'preprint'
+	: 'manuscript';
+
+function detectWeb(doc, url) {
+	if (url.includes('/manuscript/')) {
+		if (doc.querySelector('.peer-reviewed-box')) {
+			return 'journalArticle';
+		}
+		else {
+			return preprintType;
+		}
+	}
+	else if (getSearchResults(doc, true)) {
+		return 'multiple';
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.row a.title[href*="/manuscript/"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+async function doWeb(doc, url) {
+	if (detectWeb(doc, url) == 'multiple') {
+		let items = await Zotero.selectItems(getSearchResults(doc, false));
+		if (items) {
+			await Promise.all(
+				Object.keys(items)
+					.map(url => requestDocument(url).then(scrape))
+			);
+		}
+	}
+	else {
+		await scrape(doc, url);
+	}
+}
+
+async function scrape(doc, url) {
+	if (doc.querySelector('.peer-reviewed-box')) {
+		let DOI = doc.querySelector('.peer-reviewed-box .journal-ref').lastChild.nodeValue;
+		if (DOI) DOI = ZU.cleanDOI(DOI);
+		if (DOI) {
+			await scrapeDOI(DOI);
+		}
+		else {
+			await scrapePublisher(attr(doc, '.peer-reviewed-box a', 'href'));
+		}
+	}
+	else {
+		await scrapeEM(doc, url);
+	}
+}
+
+async function scrapeDOI(DOI) {
+	let translator = Zotero.loadTranslator('search');
+	translator.setSearch({ DOI });
+	translator.setHandler('translators', (_, translators) => {
+		translator.setTranslator(translators);
+	});
+	await translator.getTranslators();
+	await translator.translate();
+}
+
+// Just a failsafe in case there's no DOI
+async function scrapePublisher(url) {
+	let doc = await requestDocument(url);
+	let translator = Zotero.loadTranslator('web');
+	translator.setDocument(doc);
+	translator.setHandler('translators', (_, translators) => {
+		translator.setTranslator(translators);
+	});
+	await translator.getTranslators();
+	await translator.translate();
+}
+
+async function scrapeEM(doc, url = doc.location.href) {
+	let translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', (_obj, item) => {
+		item.attachments = item.attachments.filter(a => a.title != 'Snapshot');
+		item.libraryCatalog = 'Preprints.org';
+		try {
+			item.archiveID = url.match(/\/manuscript\/([^/?#]+)/)[1].replace('.', '');
+		}
+		catch (e) {}
+		item.complete();
+	});
+
+	let em = await translator.getTranslatorObject();
+	em.itemType = preprintType;
+	await em.doWeb(doc, url);
+}

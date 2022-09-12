@@ -1,0 +1,109 @@
+function detectWeb(doc, url) {
+	if (url.includes('/ps/eToc.do')
+		|| text(doc, 'h1.page-header').includes("Table of Contents")
+		|| doc.querySelector('.bookPreview')) {
+		return "book";
+	}
+	if (doc.querySelector('#searchResults')
+		|| url.includes('/Search.do')
+		|| url.includes('/paginate.do')) {
+		if (getSearchResults(doc, true)) {
+			return "multiple";
+		}
+		else if (doc.querySelector('#searchResults')) {
+			Z.monitorDOMChanges(doc.querySelector('#searchResults'));
+		}
+	}
+	let publisherType = attr(doc, '.zotero', 'data-zoterolabel');
+	if (publisherType) {
+		Z.debug('Using publisher-provided item type: ' + publisherType);
+		return publisherType;
+	}
+	if (doc.querySelector('a[data-gtm-feature="bookView"]')) {
+		return "bookSection";
+	}
+	else if (doc.body.classList.contains('document-page')) {
+		// not the greatest fallback... other guesses we could use?
+		return "magazineArticle";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	let items = {};
+	let found = false;
+	let rows = doc.querySelectorAll('h3.title > a.documentLink');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let citeData = doc.querySelector('input.citationToolsData');
+	let documentUrl = citeData.getAttribute('data-url');
+	// Value is URL-encoded when loaded via processDocuments()
+	documentUrl = decodeURIComponent(documentUrl);
+	let mcode = citeData.getAttribute('data-mcode');
+	let productName = citeData.getAttribute('data-productname');
+	let docId = mcode ? undefined : citeData.getAttribute('data-docid');
+	let documentData = JSON.stringify({
+		docId,
+		mcode,
+		documentUrl,
+		productName
+	});
+	let risPostBody = "citationFormat=RIS&documentData=" + encodeURIComponent(documentData).replace(/%20/g, "+");
+	
+	let pdfURL = attr(doc, 'button[data-gtm-feature="download"]', 'data-url');
+
+	ZU.doPost('/ps/citationtools/rest/cite/download', risPostBody, function (text) {
+		let translator = Zotero.loadTranslator("import");
+		// RIS
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(text);
+		translator.setHandler("itemDone", function (obj, item) {
+			if (pdfURL) {
+				item.attachments.push({
+					url: pdfURL,
+					title: "Full Text PDF",
+					mimeType: "application/pdf"
+				});
+			}
+			
+			if (item.ISSN) {
+				item.ISSN = Zotero.Utilities.cleanISSN(item.ISSN);
+			}
+			
+			if (item.pages && item.pages.endsWith("+")) {
+				item.pages = item.pages.replace(/\+/, "-");
+			}
+			
+			item.attachments.push({
+				title: "Snapshot",
+				document: doc
+			});
+			
+			item.notes = [];
+			item.url = item.url.replace(/u=[^&]+&?/, '');
+			item.complete();
+		});
+		translator.translate();
+	});
+}

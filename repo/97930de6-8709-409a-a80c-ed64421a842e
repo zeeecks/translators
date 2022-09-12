@@ -1,0 +1,112 @@
+// attr()/text() v2
+function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null}
+
+
+function detectWeb(doc, url) {
+	if (attr(doc, 'meta[property="og:type"]', 'content')=="article") {
+		return "journalArticle";
+	} else if (url.indexOf('/pages/')>-1 && getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('h4>a[title]');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	//The metatags are like HighWire tags but have 'wkhealth_' instead
+	//of 'citation_' in their name. We change this to the standard
+	//before calling metadata translator.
+	var metatags = doc.getElementsByTagName("meta");
+	for (var i=0; i<metatags.length; i++) {
+		var name = metatags[i].getAttribute('name');
+		if (name && name.indexOf('wkhealth_')>-1 && name.indexOf('_pdf_url')==-1) {
+			//only if the corresponding meta element is not yet there (e.g. doi)
+			if (!attr(doc, 'meta[name=' + name.replace('wkhealth_', 'citation_') + ']', 'content')) {
+				metatags[i].setAttribute('name', name.replace('wkhealth_', 'citation_'));
+			}
+		}
+	}
+	
+	
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	//translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		//abstract on the page is more complete then the one in the metadata
+		var abstract = text(doc, '#article-abstract-content1');
+		if (abstract) {
+			item.abstractNote = abstract;
+		}
+		//in the website there is also the end page number mentioned
+		var span = text(doc, '#ej-journal-date-volume-issue-pg');
+		if (span) {
+			var m = span.match(/- pp? (\d+)[-–](\d+)/);
+			if (item.pages) {
+				if (item.pages.indexOf('–')==-1) {
+					if (m && m[1]==item.pages) {
+						item.pages += '–'+m[2];
+					}
+				}
+			} else {
+				if (m) {
+					item.pages = m[1] + '–' + m[2];
+				}
+			}
+		}
+		
+		item.url = url;
+		
+		/* currently this does not work
+		var pdf = attr(doc, 'li>i.icon-file-pdf', 'class');
+		var pdfurl = attr(doc, 'meta[name="wkhealth_pdf_url"]', 'content');
+		Z.debug(pdfurl);
+		if (pdf && pdfurl) {
+			item.attachments.push({
+				title: "Full Text PDF",
+				url: pdfurl,
+				mimeType: "application/pdf"
+			})
+		}
+		*/
+		
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function(trans) {
+		trans.itemType = "journalArticle";
+		trans.doWeb(doc, url);
+	});
+}

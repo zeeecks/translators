@@ -1,0 +1,97 @@
+/*
+	MDPI Translator
+	Copyright (C) 2013 Sebastian Karcher
+	
+	This program is free software: you can redistribute it and/or modify
+	it under the terms of the GNU Affero General Public License as published by
+	the Free Software Foundation, either version 3 of the License, or
+	(at your option) any later version.
+	
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+	GNU Affero General Public License for more details.
+	
+	You should have received a copy of the GNU Affero General Public License
+	along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+function detectWeb(doc, _url) {
+	var xpath = '//meta[@name="citation_journal_title"]';
+	if (ZU.xpath(doc, xpath).length > 0) {
+		return "journalArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//div[contains(@class, "article-content")]/a[contains(@class, "title-link")]');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	// use Embedded Metadata
+	translator.setTranslator("951c027d-74ac-47d4-a107-9c3069ab7b48");
+	translator.setDocument(doc);
+	translator.setHandler('itemDone', function (obj, item) {
+		if (!item.abstractNote) item.abstractNote = item.extra;
+		// prefer citation_authors if present for the initials
+		let authors = attr(doc, 'meta[name="citation_authors"]', 'content');
+		item.ISSN = ZU.cleanISSN(url);
+		if (authors) {
+			let i = 0;
+			for (let author of authors.split(';')) {
+				if (author.includes(item.creators[i].lastName)) {
+					item.creators[i] = ZU.cleanAuthor(author, "author", true);
+				}
+				i++;
+			}
+		}
+		// The site double-encoudes HTML in metatags, e.g. https://www.mdpi.com/2071-1050/14/1/15
+		item.title = htmlDecode(item.title);
+		item.abstractNote = htmlDecode(item.abstractNote);
+		delete item.extra;
+		item.complete();
+	});
+	translator.translate();
+}
+
+// from https://stackoverflow.com/a/34064434/1483360
+function htmlDecode(input) {
+	var string = new DOMParser().parseFromString(input, "text/html");
+	return string.documentElement.textContent;
+}

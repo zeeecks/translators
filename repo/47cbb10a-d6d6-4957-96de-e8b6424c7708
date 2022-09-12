@@ -1,0 +1,135 @@
+function detectWeb(doc, _url) {
+	if (doc.querySelector('#doc-viewr-container')) {
+		return typeFromM3(text(doc, 'a[href*="sm_resource_type="]'));
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.search-result-row .object-title');
+	for (let row of rows) {
+		let href = attr(row, 'form[action]', 'action');
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	var risURL = url.replace(/[#?].*$/, '').replace(/\/$/, '') + '/export';
+	let pdfURL = attr(doc, 'form#download-document', 'action');
+	
+	ZU.doGet(risURL, function (risText) {
+		let m3 = (risText.match(/^M3\s*-\s*(.+)$/m) || [])[1] || '';
+		
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(risText);
+		translator.setHandler("itemDone", function (obj, item) {
+			item.itemType = typeFromM3(m3);
+			if (m3.trim() == 'Dataset') {
+				item.extra = (item.extra || '') + `\nType: dataset`;
+			}
+			
+			item.libraryCatalog = 'ROSA P';
+			
+			if (item.itemType == 'report' && !item.reportNumber) {
+				item.reportNumber = item.issue;
+				delete item.issue;
+			}
+			
+			if (!item.callNumber) {
+				item.callNumber = item.archiveLocation;
+				delete item.archiveLocation;
+			}
+			
+			if (pdfURL) {
+				item.attachments.push({
+					url: pdfURL,
+					title: 'Full Text PDF',
+					mimeType: 'application/pdf'
+				});
+			}
+			
+			item.complete();
+		});
+		translator.translate();
+	});
+}
+
+// Map ROSA P types to Zotero types. Some of these mappings are rather arbitrary.
+function typeFromM3(statedType) {
+	switch (statedType.trim()) {
+		case 'Application':
+		case 'Brief':
+		case 'Example':
+		case 'In Collection':
+		case 'Organization Info':
+		case 'Other':
+		case 'Policy Statement':
+		case 'Press Release':
+		case 'Research Paper': // no journal articles that I can find
+		case 'Tech Report':
+			return 'report';
+		case 'Biography':
+		case 'Book':
+		case 'Booklet/Pamphlet':
+		case 'Journal':
+		case 'Magazine':
+		case 'Manual':
+		case 'Newspaper':
+		case 'Proceedings':
+			return 'book';
+		case 'Data Management Plan':
+		case 'Dataset':
+		case 'Memorandum':
+		case 'Multipart': // not common, doesn't really mean anything
+		case 'PDF':
+		case 'Text':
+			return 'document';
+		case 'Dissertation':
+		case 'Thesis':
+			return 'thesis';
+		case 'Image':
+			return 'artwork';
+		case 'In Book':
+			return 'bookSection';
+		case 'In Proceedings':
+			return 'conferencePaper';
+		case 'Journal Article':
+			return 'journalArticle';
+		case 'Letter':
+			return 'letter';
+		case 'Manuscript':
+			return 'manuscript';
+		case 'Map':
+			return 'map';
+		case 'Presentations':
+			return 'presentation';
+		case 'Video':
+			return 'videoRecording';
+		case 'Web Document':
+			return 'webpage';
+		default:
+			return 'report'; // this is a pretty safe guess in this catalog
+	}
+}

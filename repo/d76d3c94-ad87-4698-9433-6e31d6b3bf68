@@ -1,0 +1,39 @@
+function detectWeb(doc, url) { 
+		return FW.detectWeb(doc, url);
+}
+function doWeb(doc, url) { return FW.doWeb(doc, url); }
+
+
+/** Articles */
+FW.Scraper({ itemType         : 'newspaperArticle',
+			 detect           : FW.Url().match(/\/news\/\d+\.html/),
+			 title            : FW.Xpath('//div[@class="item-view"]//h1').text().trim(),
+			 attachments      : [
+			 {
+			   url : FW.Url(),
+			   type : "text/html",
+			   title : "Tatpressa.ru Snapshot"
+				 
+			 }],
+			 creators         : FW.Xpath('//div[@class="fr"][1]/p/text()[1]').text().cleanAuthor("author"),
+			 date 	      : FW.Xpath('//div[@class="item-view"]/div[1]').text().match(/(\d{1,2}\.\d{1,2}\.\d{4})/,1),
+			 edition 	      : FW.Xpath('//div[@class="fr"]/p').text().match(/(№\s+[^\s|]+)/,1).remove(/№ ?---/),
+			 section		: FW.Xpath('//div[@class="item-view"]/div[1]').text().match(/(\d{1,2}\.\d{1,2}\.\d{4})\s+(.*)/,2),
+			 publicationTitle : FW.Xpath('//div[@class="fr"]/p/a[1]').text(),
+			 hooks : { "scraperDone": function  (item,doc, url) {
+	for (i in item.creators) {
+		if (item.creators[i].lastName == item.creators[i].lastName.toUpperCase()) {
+			item.creators[i].lastName = Zotero.Utilities.capitalizeTitle(
+				item.creators[i].lastName.toLowerCase(),true);
+		}
+	}
+	}}
+		});
+
+
+/** Search results */
+FW.MultiScraper({ itemType  : "multiple",
+			 	  detect    : FW.Xpath('//div[@class="item"]//a[@class="short"]'),
+			 	  choices : { titles    : FW.Xpath('//div[@class="item"]//a[@class="title"]').text(),
+			 	  urls    : FW.Xpath('//div[@class="item"]//a[@class="title"]').key('href').text() }
+});

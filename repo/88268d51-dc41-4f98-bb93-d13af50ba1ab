@@ -1,0 +1,68 @@
+function detectWeb(doc, url) { return FW.detectWeb(doc, url); }
+function doWeb(doc, url) { return FW.doWeb(doc, url); }
+
+/** Categories*/
+FW.MultiScraper({
+itemType : "multiple",
+detect : FW.Xpath('//ul[@class="list"]'),
+choices : {
+  titles : FW.Xpath('//ul[@class="list"]//a//h3|//div[@class="feature"]/a/h1').text(),
+  urls : FW.Xpath('//ul[@class="list"]//a[.//h3]|//div[@class="feature"]/a[h1]').key('href').text()
+}
+});
+
+/** Blogpost */
+FW.Scraper({
+itemType : 'blogPost',
+detect : FW.Xpath('//section[@class="content blog"]//div[@class="content-body"]/span[@class="author"]'),
+title : FW.Xpath('//h1').text().trim(),
+attachments : {
+  url : FW.Url(),
+  title : "In These Times Blog Snapshot",
+  type : "text/html"
+},
+creators : FW.Xpath('//span[@class="author"]/a').text().split(/\sand\s/).cleanAuthor("author"),
+date : FW.Xpath('//h5[@class="datetime"]').text(),
+publicationTitle : FW.Xpath('//div[@class="feature"]/h1').text().prepend("In These Times Blog - ")
+});
+
+/** Articles */
+FW.Scraper({
+itemType : 'magazineArticle',
+detect : FW.Xpath('//div/h1[@class="article-headline"]'),
+title : FW.Xpath('//h1[@class="article-headline"]').text().trim(),
+attachments : {
+  url : FW.Url(),
+  title : "In These Times Snapshot",
+  type : "text/html"
+},
+creators : FW.Xpath('//span[@class="author"]/a').text().split(/\sand\s/).cleanAuthor("author"),
+date : FW.Xpath('//h5[@class="article-dateline"]').text().trimInternal().remove(/.+»/),
+abstractNote: FW.Xpath('//p[@class="article-deck"]').text().trim(),
+language: "en-US",
+ISSN: "0160-5992",
+publicationTitle : "In These Times"
+});
+
+
+/** All Blogs */
+FW.MultiScraper({
+itemType : "multiple",
+detect : FW.Xpath('//ul[@id="category-list"]'),
+choices : {
+  titles : FW.Xpath('//ul[@id="category-list"]//h5/a|//div[@class="main-block"]/h1/a').text(),
+  urls : FW.Xpath('//ul[@id="category-list"]//h5/a|//div[@class="main-block"]/h1/a').key('href').text()
+}
+});
+
+
+
+/** Individual Blogs */
+FW.MultiScraper({
+itemType : "multiple",
+detect : FW.Xpath('//div[@class="content-body"]/h1'),
+choices : {
+  titles : FW.Xpath('//div[@class="content-body"]/h1/a').text(),
+  urls : FW.Xpath('//div[@class="content-body"]/h1/a').key('href').text()
+}
+});

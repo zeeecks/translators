@@ -1,0 +1,66 @@
+function detectWeb(doc, url) {
+	if (!doc.querySelector('#tindfooter')) {
+		return false;
+	}
+	
+	if (url.includes('/record/')) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	else if (url.includes('/search')) {
+		Z.monitorDOMChanges(doc.querySelector('.pagebody'));
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.result-title a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, _url) {
+	let marcXMLURL = attr(doc, 'a[href$="/export/xm"], a[download$=".xml"]', 'href');
+	ZU.doGet(marcXMLURL, function (respText) {
+		var translator = Zotero.loadTranslator("import");
+		// MARCXML
+		translator.setTranslator("edd87d07-9194-42f8-b2ad-997c4c7deefd");
+		translator.setString(respText);
+		
+		translator.setHandler("itemDone", function (obj, item) {
+			item.libraryCatalog = text(doc, '#headerlogo')
+				|| attr(doc, 'meta[property="og:site_name"]', 'content');
+			
+			let erURL = attr(doc, '.er-link', 'href');
+			if (erURL) {
+				item.url = erURL;
+			}
+			
+			item.complete();
+		});
+		
+		translator.translate();
+	});
+}

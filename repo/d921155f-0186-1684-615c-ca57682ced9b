@@ -1,0 +1,259 @@
+function detectWeb(doc, url) {
+	// See if this is a search results page or Issue content
+	if (doc.title == "JSTOR: Search Results") {
+		return "multiple";
+	}
+	// Issues with DOIs can't be identified by URL
+	else if (/stable|pss/.test(url)) {
+		if (getSearchResults(doc, true)) {
+			return "multiple";
+		}
+		else {
+			Z.monitorDOMChanges(doc.body,
+				{ attributeFilter: ['style'] });
+		}
+	}
+	
+	// If this is a view page, find the link to the citation
+	var favLink = getFavLink(doc);
+	if ((favLink && getJID(favLink.href)) || getJID(url)) {
+		if (ZU.xpathText(doc, '//li[@class="book_info_button"]')) {
+			return "book";
+		}
+		else if (text(doc, 'script[data-analytics-provider]').includes('"chapter view"')) {
+			// might not stick around, but this is really just for the toolbar icon
+			// (and tests)
+			return "bookSection";
+		}
+		else {
+			return "journalArticle";
+		}
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var resultsBlock = doc.querySelectorAll('.media-body.media-object-section');
+	if (!resultsBlock.length) {
+		resultsBlock = doc.querySelectorAll('.result');
+	}
+	if (!resultsBlock.length) {
+		resultsBlock = doc.querySelectorAll('.toc-item');
+	}
+	if (!resultsBlock.length) return false;
+	var items = {}, found = false;
+	for (let row of resultsBlock) {
+		let title = text(row, '.title, .small-heading, toc-view-pharos-link');
+		let jid = getJID(attr(row, 'a', 'href'));
+		if (!jid) {
+			jid = getJID(attr(row, '[href]', 'href'));
+		}
+		if (!jid || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[jid] = title;
+		// Zotero.debug("Found title "+ title +" with JID "+ jid);
+	}
+	return found ? items : false;
+}
+
+function getFavLink(doc) {
+	var a = doc.getElementById('favorites');
+	if (a && a.href) return a;
+	return false;
+}
+
+function getJID(url) {
+	if (!url) return false;
+	var m = url.match(/(?:discover|pss|stable(?:\/info|\/pdf)?)\/(10\.\d+(?:%2F|\/)[^?]+|[a-z0-9.]*)/);
+	if (m) {
+		var jid = decodeURIComponent(m[1]);
+		if (jid.search(/10\.\d+\//) !== 0) {
+			if (jid.substr(-4) == ".pdf") {
+				jid = jid.substr(0, jid.length - 4);
+			}
+			Zotero.debug("Converting JID " + jid + " to JSTOR DOI");
+			jid = '10.2307/' + jid;
+		}
+		return jid;
+	}
+	return false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == 'multiple') {
+		Zotero.selectItems(getSearchResults(doc), function (selectedItems) {
+			if (selectedItems) {
+				var jids = [];
+				for (var j in selectedItems) {
+					jids.push(j);
+				}
+				scrape(jids);
+			}
+		});
+	}
+	else {
+		// If this is a view page, find the link to the citation
+		var favLink = getFavLink(doc);
+		var jid;
+		if (favLink && (jid = getJID(favLink.href))) {
+			Zotero.debug("JID found 1 " + jid);
+			scrape([jid]);
+		}
+		else if ((jid = getJID(url))) {
+			Zotero.debug("JID found 2 " + jid);
+			scrape([jid]);
+		}
+	}
+}
+
+function scrape(jids) {
+	var risURL = "/citation/ris/";
+	(function next() {
+		if (!jids.length) return;
+		var jid = jids.shift();
+		ZU.doGet(risURL + jid, function (text) {
+			processRIS(text, jid);
+			next();
+		});
+	})();
+}
+
+function convertCharRefs(string) {
+	// converts hex decimal encoded html entities used by JSTOR to regular utf-8
+	return string
+		.replace(/&#x([A-Za-z0-9]+);/g, function (match, num) {
+			return String.fromCharCode(parseInt(num, 16));
+		});
+}
+
+function processRIS(text, jid) {
+	// load translator for RIS
+	var translator = Zotero.loadTranslator("import");
+	translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+	// Z.debug(text);
+	
+	// Reviews have a RI tag now (official RIS for Reviewed Item)
+	var review = text.match(/^RI\s+-\s+(.+)/m);
+	// sometimes we have subtitles stored in T1. These are part of the title, we want to add them later
+	var subtitle = text.match(/^T1\s+-\s+(.+)/m);
+	var maintitle = text.match(/^TI\s+-\s+(.+)/m);
+	translator.setString(text);
+	translator.setHandler("itemDone", function (obj, item) {
+		// author names are not (always) supplied as lastName, firstName in RIS
+		// we fix it here (note sure if still need with new RIS)
+	
+		var m;
+		for (var i = 0, n = item.creators.length; i < n; i++) {
+			if (!item.creators[i].firstName
+				&& (m = item.creators[i].lastName.match(/^(.+)\s+(\S+)$/))) {
+				item.creators[i].firstName = m[1];
+				item.creators[i].lastName = m[2];
+				delete item.creators[i].fieldMode;
+			}
+		}
+		
+		// fix special characters in abstract, convert html linebreaks and italics, remove stray p tags; don't think they use anything else
+		if (item.abstractNote) {
+			item.abstractNote = convertCharRefs(item.abstractNote);
+			item.abstractNote = item.abstractNote.replace(/<\/p><p>/g, "\n").replace(/<em>(.+?)<\/em>/g, " <i>$1</i> ").replace(/<\/?p>/g, "");
+			item.abstractNote = item.abstractNote.replace(/^\[/, "").replace(/\]$/, "");
+		}
+		// Don't save HTML snapshot from 'UR' tag
+		item.attachments = [];
+		// not currently using but that's where the PDF link is
+		// var pdfurl = attr('a[data-qa="download-pdf"]', 'href');
+		// Books don't have PDFs
+		if (/stable\/([a-z0-9.]+)/.test(item.url) & item.itemType != "book") {
+			let pdfurl = "/stable/pdfplus/" + jid + ".pdf?acceptTC=true";
+			item.attachments.push({
+				url: pdfurl,
+				title: "JSTOR Full Text PDF",
+				mimeType: "application/pdf"
+			});
+		}
+
+		if (item.ISSN) {
+			item.ISSN = ZU.cleanISSN(item.ISSN);
+		}
+		
+		// Only the DOIs mentioned in RIS are valid, and we don't
+		// add any other jid for DOI because they are only internal.
+		
+		if (maintitle && subtitle) {
+			maintitle[1] = maintitle[1].replace(/:\s*$/, '');
+			item.title = maintitle[1] + ": " + subtitle[1];
+		}
+		// reviews don't have titles in RIS - we get them from the item page
+		if (!item.title && review) {
+			var reviewedTitle = review[1];
+			// A2 for reviews is actually the reviewed author
+			var reviewedAuthors = [];
+			for (i = 0; i < item.creators.length; i++) {
+				if (item.creators[i].creatorType == "editor") {
+					reviewedAuthors.push(item.creators[i].firstName + " " + item.creators[i].lastName);
+					item.creators[i].creatorType = "reviewedAuthor";
+				}
+			}
+			// remove any reviewed authors from the title
+			for (i = 0; i < reviewedAuthors.length; i++) {
+				reviewedTitle = reviewedTitle.replace(", "+reviewedAuthors[i], "");
+			}
+			item.title = "Review of " + reviewedTitle;
+		}
+		
+		// titles may also contain escape characters
+		item.title = convertCharRefs(item.title);
+		item.url = item.url.replace('http:', 'https:'); // RIS still lists http addresses while JSTOR's stable URLs use https
+		if (item.url && !item.url.startsWith("http")) item.url = "https://" + item.url;
+		
+		// DB in RIS maps to archive; we don't want that
+		delete item.archive;
+		if (item.DOI || /DOI: 10\./.test(item.extra)) {
+			finalizeItem(item);
+		}
+		else {
+			item.complete();
+		}
+	});
+		
+	translator.getTranslatorObject(function (trans) {
+		trans.doImport();
+	});
+}
+
+function finalizeItem(item) {
+	// Validate DOI
+	let doi = item.DOI || item.extra.match(/DOI: (10\..+)/)[1];
+	Zotero.debug("Validating DOI " + doi);
+	// This just returns two lines of JSON
+	ZU.doGet('https://doi.org/doiRA/' + encodeURIComponent(doi),
+		function (text) {
+			// Z.debug(text)
+			try {
+				var ra = JSON.parse(text);
+				// Z.debug(ra[0].status)
+				if (!ra[0] || ra[0].status == "DOI does not exist") {
+					Z.debug("DOI " + doi + " does not exist");
+					if (item.DOI) {
+						delete item.DOI;
+					}
+					else {
+						item.extra = item.extra.replace(/DOI: 10\..+\n?/, "");
+					}
+				}
+			}
+			catch (e) {
+				if (item.DOI) {
+					delete item.DOI;
+				}
+				else {
+					item.extra.replace(/DOI: 10\..+\n?/, "");
+				}
+				Zotero.debug("Could not parse JSON. Probably invalid DOI");
+			}
+		}, function () {
+			item.complete();
+		}
+	);
+}

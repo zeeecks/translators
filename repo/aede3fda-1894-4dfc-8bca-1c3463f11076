@@ -1,0 +1,121 @@
+var courtAbbrevs = {
+	"hoge raad": "HR",
+	"raad van state": "ABRvS",
+	"centrale raad van beroep": "CRvB",
+	"college van beroep voor het bedrijfsleven": "CBb",
+	gerechtshof: "Hof",
+	rechtbank: "Rb.",
+	"raad van beroep": "RvB",
+	"gerecht in eerste aanleg van": "GiEA",
+	"gemeenschappelijk hof van justitie": "Gem. Hof",
+	"van ": ""
+};
+
+// ReplaceAll solution from https://stackoverflow.com/questions/15604140/replace-multiple-strings-with-multiple-other-strings
+// All keys should be lowercase.
+function replaceAll(str, mapObj) {
+	var re = new RegExp(Object.keys(mapObj).join("|"), "gi");
+
+	return str.replace(re, function (matched) {
+		return mapObj[matched.toLowerCase()];
+	});
+}
+
+var esc = ZU.unescapeHTML;
+
+
+// Custom cleaning function for scraping, adapted from utilities.js
+function cleanTags(x) {
+	if (x === null) { // account for cases without abstractNote
+		return undefined;
+	}
+	else if (typeof (x) != "string") {
+		throw new Error("cleanTags: argument must be a string");
+	}
+	x = x.replace(/<(\/para|br)[^>]*>/gi, "\n"); // account for dcterms:abstract newlines
+	x = x.replace(/<[^>]+>/g, "");
+	return esc(x);
+}
+
+function detectWeb(doc, url) {
+	if (url.includes('inziendocument')) {
+		return "case";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	else if (url.includes('zoekverfijn')) {
+		Z.monitorDOMChanges(doc.getElementById('content'));
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('h3>a.titel[href*="inziendocument"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, _url) {
+	var newItem = new Zotero.Item("case");
+
+	// First, scrape easy properties
+	newItem.title = esc(attr(doc, 'meta[property="dcterms:title"]', 'content')); // no party names, unfortunately
+	newItem.docketNumber = esc(attr(doc, 'meta[property="dcterms:identifier"]', 'content'));
+	newItem.dateDecided = attr(doc, 'meta[property="dcterms:created"]', 'content');
+	newItem.extra = "Soort: " + esc(attr(doc, 'link[rel="dcterms:type"]', 'title'));
+	newItem.language = attr(doc, 'meta[property="dcterms:language"]', 'content');
+	newItem.abstractNote = cleanTags(attr(doc, 'meta[property="dcterms:abstract"]', 'content'));
+	newItem.url = "https://deeplink.rechtspraak.nl/uitspraak?id=" + newItem.docketNumber;
+	newItem.shortTitle = '';
+
+	// Pursuant to most citation styles (including Leidraad voor juridische auteurs), we abbreviate the court names
+	var fullCourtName = cleanTags(attr(doc, 'meta[property="dcterms:creator"]', 'content'));
+	newItem.court = replaceAll(fullCourtName, courtAbbrevs);
+
+	// Because we do not know which reporter the user wants to cite, add them all to abstractNote
+	newItem.abstractNote = newItem.abstractNote.concat("\nVindplaatsen:", cleanTags(ZU.xpathText(doc, "//dt[text()='Vindplaatsen']//following::dd[1]")));
+
+	// References go in the History field
+	var relationArray = [];
+	for (let relation of doc.querySelectorAll('link[rel="dcterms:relation"]')) {
+		relationArray.push(relation.getAttribute('title'));
+	}
+	newItem.history = relationArray.join('; ');
+
+	// Add fields of law as tags
+	var tags = attr(doc, 'link[rel="dcterms:subject"]', 'title');
+	if (tags.length) {
+		newItem.tags = tags.split('; ');
+	}
+
+	// Attachments
+	var pdfurl = attr(doc, 'a.pdfUitspraak', 'href');
+	newItem.attachments = [{
+		url: pdfurl,
+		title: "Rechtspraak.nl PDF",
+		mimeType: "application/pdf",
+	}];
+
+	newItem.complete();
+}

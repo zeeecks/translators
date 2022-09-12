@@ -1,0 +1,70 @@
+function detectWeb(doc, url) {
+	if (doc.querySelector('.cite a')) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('h2.itemTitle > a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) scrape(Object.keys(items).map(getDocumentURI));
+		});
+	}
+	else {
+		scrape([getDocumentURI(url)]);
+	}
+}
+
+function scrape(documentURIs) {
+	ZU.doPost(
+		'/rest/citation/export',
+		JSON.stringify({
+			citationExports: documentURIs.map(uri => ({
+				citationId: null,
+				documentUri: uri
+			})),
+			format: 'ris'
+		}),
+		function (text) {
+			var translator = Zotero.loadTranslator("import");
+			// RIS
+			translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+			translator.setString(text);
+			translator.setHandler("itemDone", function (obj, item) {
+				item.tags = item.tags.filter(tag => tag != 'ER');
+				item.complete();
+			});
+			translator.translate();
+		},
+		{
+			'Content-Type': 'application/json'
+		}
+	);
+}
+
+function getDocumentURI(url) {
+	if (!url.includes('/view')) {
+		return false;
+	}
+	
+	return url.replace(/[#?].*/, '').substring(url.indexOf('/view') + 5);
+}

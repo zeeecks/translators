@@ -1,0 +1,90 @@
+/* other working implementations: 
+http://zoeken.oba.nl/
+http://aquabrowser.lib.ed.ac.uk
+http://boss.library.okstate.edu/
+
+Not working bc export isn't implemented: None of these are academic, so I'm not particularly worried
+http://cabrio.bibliotheek.brugge.be/
+http://aquabrowser.selco.info/?c_profile=rw
+http://kcaqua.kclibrary.org
+http://aquabrowser.biboostende.be/
+http://abl.courthouselibrary.ca/
+http://leocat.saintleo.edu
+*/
+
+function detectWeb(doc, url) {
+	if (url.match(/\/result\.ashx\?/) && ZU.xpath(doc, '//div[@class="titlenew"]//a[@class="classiclink"]').length>0) return "multiple";
+	if (url.match(/\/fullrecordinnerframe\.ashx\?.+id=/)) return "book";
+}
+	
+
+function doWeb(doc, url){
+
+	var articles = new Array();
+	if (detectWeb(doc, url) == "multiple") { 
+		var items = {};
+		var titles = doc.evaluate('//div[@class="titlenew"]//a[@class="classiclink"]', doc, null, XPathResult.ANY_TYPE, null);
+		var title;
+		var id;
+		while (title = titles.iterateNext()) {
+			items[title.href] = ZU.trimInternal(title.textContent);
+		}
+		Zotero.selectItems(items, function (items) {
+			if (!items) {
+				return true;
+			}
+			for (var i in items) {
+				//some implementations don't have direct links, just the id in javascript
+				if (i.search(/^javascript/)!=-1){
+					//remove the javascript escaping
+					i=i.replace(/\\/g, "");
+					id = "itemid=" + i.match(/\(\'(.+?)\'/)[1];
+				}
+				else id = i.match(/[^&\?]+id=[^&]+/)[0]
+				articles.push(makeURL(id));
+			}
+			//Z.debug(articles)
+			scrape(articles);
+		});
+	} else {
+		var id = url.match(/[^&\?]+id=[^&]+/)[0];
+		var risurl = makeURL(id);
+		scrape (risurl);
+	}
+}
+
+function makeURL(id){
+	var idnumber = id.match(/=(.+)/)[1];
+	var risurl = "/export.ashx?type=export-ris&app=endnote&file=" +idnumber + "&" + id;
+	return risurl;
+}
+
+
+function scrape(risurl){
+	Zotero.Utilities.HTTP.doGet(risurl, function (text) {
+		//I'll leave this debugging in for the time being
+		Z.debug("This should be RIS: " + text)
+		//fix years - we don't like letters immediately before dates
+		text = text.replace(/(Y  - )[A-Za-z]+(\d{4})/, "$1$2");
+		//apparently the RIS doesn't do well with item types
+		text = text.replace(/TY  - (Boek|GEN)/, "TY  - BOOK");
+		
+		var translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(text);
+		translator.setHandler("itemDone", function(obj, item) {
+			if (item.pages) item.numPages = item.pages;
+			//remove space before :
+			item.title = item.title.replace(/\s+:/, ":");
+			for (i in item.creators){
+				//for some reason there's often a period after the first name of authors. Delete this, making sure it's not an initial
+				if (item.creators[i].firstName){
+					item.creators[i].firstName = item.creators[i].firstName.replace(/([a-z]+)\.\s*$/, "$1");
+				}
+			}
+			item.url = "";
+			item.complete();
+		});	
+		translator.translate();
+	});
+}

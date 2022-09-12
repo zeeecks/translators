@@ -1,0 +1,379 @@
+function detectWeb(doc, url) {
+	if (url.search(/^https?:\/\/[^/]+\/toc\/|\/action\/doSearch\?|\/doi\/book\//) != -1) {
+		return getSearchResults(doc, true) ? "multiple" : false;
+	}
+	
+	var citLink = doc.querySelector('a[href*="/action/showCitFormats"], a[href*="#pill-citations"], .actions-block-container__export-citation, div.pill__item, section.pill__item div.citation-download, a[href*="#tab-citations"]');
+	if (citLink) {
+		if (url.includes('/doi/book/')) {
+			return 'book';
+		}
+		else if (url.search(/\.ch\d+$/) != -1) {
+			return 'bookSection';
+		}
+		else if (isConference(doc)) {
+			return 'conferencePaper';
+		}
+		return "journalArticle";
+	}
+
+	return false;
+}
+
+function getSearchResults(doc, checkOnly, extras) {
+	var articles = {};
+	var container = doc.getElementsByName('frmSearchResults')[0]
+		|| doc.getElementsByName('frmAbs')[0]
+		|| doc.querySelector('.search__body, .search-result, .table-of-content');
+	if (!container) {
+		Z.debug('Atypon: multiples container not found.');
+		return false;
+	}
+
+	// Add whole book entry for book ToCs, but require chapter entries
+	// before returning true if checkOnly
+	if (doc.querySelector('.book-toc')) {
+		let title = attr(doc, 'meta[property="og:title"]', 'content')
+			|| doc.title;
+		title = title.split('|')[0];
+		let url = doc.location.href;
+		if (title) {
+			articles[url] = title;
+			if (extras) {
+				extras[url] = {};
+			}
+		}
+	}
+
+	var rows = container.getElementsByClassName('articleEntry'),
+		found = false,
+		doiLink = 'a[contains(@href, "/doi/abs/") or contains(@href, "/doi/abstract/") or '
+			+ 'contains(@href, "/doi/full/") or contains(@href, "/doi/book/")]';
+	for (var i = 0; i < rows.length; i++) {
+		var title = rows[i].getElementsByClassName('art_title')[0];
+		if (!title) continue;
+		title = ZU.trimInternal(title.textContent);
+		
+		var urlRow = rows[i];
+		var url = ZU.xpathText(urlRow, '(.//' + doiLink + ')[1]/@href');
+		
+		if (!url) {
+			// e.g. http://pubs.rsna.org/toc/radiographics/toc/33/7 shows links in adjacent div
+			urlRow = rows[i].nextElementSibling;
+			if (!urlRow || urlRow.classList.contains('articleEntry')) continue;
+			
+			url = ZU.xpathText(urlRow, '(.//' + doiLink + ')[1]/@href');
+		}
+		if (!url) continue;
+		
+		if (checkOnly) return true;
+		found = true;
+		
+		if (extras) {
+			extras[url] = { pdf: buildPdfUrl(url, urlRow) };
+		}
+		
+		articles[url] = title;
+	}
+	
+	if (!found) {
+		Z.debug("Trying alternate multiple format #1");
+		rows = container.getElementsByClassName("item-details");
+		for (let i = 0; i < rows.length; i++) {
+			let title = ZU.xpathText(rows[i], './h3');
+			if (!title) continue;
+			title = ZU.trimInternal(title);
+			
+			let url = ZU.xpathText(rows[i], '(.//ul[contains(@class, "icon-list")]/li/'
+				+ doiLink + ')[1]/@href');
+			if (!url) continue;
+			
+			if (checkOnly) return true;
+			found = true;
+			
+			if (extras) {
+				extras[url] = { pdf: buildPdfUrl(url, rows[i]) };
+			}
+			
+			articles[url] = title;
+		}
+	}
+	
+	if (!found) {
+		Z.debug("Trying alternate multiple format #2");
+		rows = container.querySelectorAll('.issue-item, .item__body');
+		for (let row of rows) {
+			let title = text(row, 'a');
+			if (!title) continue;
+			title = ZU.trimInternal(title);
+			
+			let url = attr(row, 'a', 'href');
+			if (!url) continue;
+			
+			if (checkOnly) return true;
+			found = true;
+			
+			if (extras) {
+				extras[url] = { pdf: buildPdfUrl(url, row) };
+			}
+			
+			articles[url] = title;
+		}
+	}
+
+	if (!found) {
+		Z.debug("Trying alternate multiple format #3");
+		rows = container.querySelectorAll('.items-results .card');
+		for (let row of rows) {
+			let title = text(row, 'a');
+			if (!title) continue;
+			title = ZU.trimInternal(title);
+			
+			let url = attr(row, 'a', 'href');
+			if (!url) continue;
+			
+			if (checkOnly) return true;
+			found = true;
+			
+			if (extras) {
+				extras[url] = { pdf: buildPdfUrl(url, rows[i]) };
+			}
+			
+			articles[url] = title;
+		}
+	}
+	
+	return found ? articles : false;
+}
+
+// Keep this in line with target regexp
+var replURLRegExp = /\/doi\/((?:abs|abstract|full|figure|ref|citedby|book)\/)?/;
+
+// Regex matching sites that load PDFs in an embedded reader
+const NEED_BYPASS_EMBEDDED_READER = /^https?:\/\/www\.embopress\.org\//;
+
+function buildPdfUrl(url, root) {
+	if (!replURLRegExp.test(url)) return false; // The whole thing is probably going to fail anyway
+	
+	var pdfPaths = ['/doi/pdf/', '/doi/epdf/', '/doi/pdfplus/'];
+	for (let i = 0; i < pdfPaths.length; i++) {
+		if (ZU.xpath(root, './/a[contains(@href, "' + pdfPaths[i] + '")]').length) {
+			let pdfURL = url.replace(replURLRegExp, pdfPaths[i]);
+			if (NEED_BYPASS_EMBEDDED_READER.test(url)) {
+				Zotero.debug('Modifying PDF URL to avoid embedded reader page');
+				pdfURL = pdfURL.replace(/\/e?pdf\//, '/pdfdirect/')
+					+ (pdfURL.includes('?') ? '&' : '?')
+					+ 'download=true';
+				Zotero.debug(pdfURL);
+			}
+			return pdfURL;
+		}
+	}
+	
+	Z.debug('PDF link not found.');
+	if (root.nodeType != 9 /* DOCUMENT_NODE*/) {
+		Z.debug('Available links:');
+		var links = root.getElementsByTagName('a');
+		if (!links.length) Z.debug('No links');
+		for (let i = 0; i < links.length; i++) {
+			Z.debug(links[i].href);
+		}
+	}
+	
+	return false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		var extras = {};
+		Zotero.selectItems(getSearchResults(doc, false, extras), function (items) {
+			if (!items) {
+				return;
+			}
+			var articles = [];
+			for (var itemurl in items) {
+				articles.push({
+					url: itemurl.replace(/\?prev.+/, ""),
+					extras: extras[itemurl]
+				});
+			}
+			
+			fetchArticles(articles);
+		});
+	}
+	else {
+		scrape(doc, url, { pdf: buildPdfUrl(url, doc) });
+	}
+}
+
+function fixCase(str, titleCase) {
+	if (str.toUpperCase() != str) return str;
+	
+	if (titleCase) {
+		return ZU.capitalizeTitle(str, true);
+	}
+	
+	return str.charAt(0) + str.substr(1).toLowerCase();
+}
+
+function isConference(doc) {
+	for (let label of doc.querySelectorAll('.publication-details__list .label')) {
+		if (label.innerText.trim() == 'Conference:') {
+			return true;
+		}
+	}
+	return false;
+}
+
+function fetchArticles(articles) {
+	if (!articles.length) return;
+	
+	var article = articles.shift();
+	ZU.processDocuments(article.url, function (doc, url) {
+		scrape(doc, url, article.extras);
+	},
+	function () {
+		if (articles.length) fetchArticles(articles);
+	});
+}
+
+function scrape(doc, url, extras) {
+	url = url.replace(/[?#].*/, "");
+	var doi = url.match(/10\.[^?#]+/)[0];
+	var citationurl = url.replace(replURLRegExp, "/action/showCitFormats?doi=");
+	var abstract = doc.getElementsByClassName('abstractSection')[0]
+		|| doc.querySelector('#bookExcerpt');
+	var tags = ZU.xpath(doc, '//a[contains(@href, "keyword") or contains(@href, "Keyword=")]');
+	Z.debug("Citation URL: " + citationurl);
+	
+	function finalize(filename) {
+		Z.debug("Filename: " + filename);
+		var get = '/action/downloadCitation';
+		var post = 'doi=' + doi + '&downloadFileName=' + filename + '&format=ris&direct=true&include=cit';
+		ZU.doPost(get, post, function (risText) {
+			// Z.debug(risText);
+			var translator = Zotero.loadTranslator("import");
+			// Calling the RIS translator
+			translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+			translator.setString(risText);
+			translator.setHandler("itemDone", function (obj, item) {
+				// Sometimes we get titles and authors in all caps
+				item.title = fixCase(item.title);
+
+				// Some special characters get corrupted in the RIS we get
+				if (/\b\?s/.test(item.title) && text(doc, 'h1.citation__title')) {
+					item.title = text(doc, 'h1.citation__title');
+				}
+
+				if (!item.date) {
+					item.date = text(doc, 'span[property="datePublished"]');
+				}
+				if (item.date) {
+					item.date = ZU.strToISO(item.date);
+					let parts = item.date.split('-');
+					if (parts.length == 3 && parts[2] == '01') {
+						item.date = parts[0] + '-' + parts[1];
+					}
+				}
+				
+				if (item.journalAbbreviation == item.publicationTitle) {
+					delete item.journalAbbreviation;
+				}
+				
+				if (item.itemType == 'journalArticle' && isConference(doc)) {
+					item.itemType = 'conferencePaper';
+				}
+				
+				if (doc.querySelector('div.contributors [property="author"] a:first-child')) {
+					// the HTML is better, so we'll use that.
+					item.creators = [];
+					let contributors = doc.querySelector('div.contributors');
+					for (let authorLink of contributors.querySelectorAll('[property="author"] a:first-child')) {
+						let givenName = text(authorLink, '[property="givenName"]');
+						let familyName = text(authorLink, '[property="familyName"]');
+						if (!givenName && !familyName) {
+							item.creators.push({
+								lastName: authorLink.innerText,
+								creatorType: 'author',
+								fieldMode: 1
+							});
+						}
+						else {
+							item.creators.push({
+								firstName: givenName,
+								lastName: familyName,
+								creatorType: 'author'
+							});
+						}
+					}
+				}
+				else {
+					for (let creator of item.creators) {
+						if (creator.fieldMode == 1) {
+							// add a comma after the last name
+							// "Smith Todd G" -> "Smith, Todd G"
+							let name = creator.lastName.replace(/(\w+)/, '$1,');
+							let cleaned = ZU.cleanAuthor(name, creator.creatorType, true);
+							delete creator.fieldMode;
+							Object.assign(creator, cleaned);
+						}
+						
+						creator.lastName = fixCase(creator.lastName, true);
+						if (creator.firstName) {
+							creator.firstName = fixCase(creator.firstName, true);
+						}
+					}
+				}
+
+				item.url = url;
+				item.notes = [];
+				for (var i in tags) {
+					item.tags.push(tags[i].textContent);
+				}
+				
+				if (abstract) {
+					// Drop "Abstract" prefix
+					// This is not excellent, since some abstracts could
+					// conceivably begin with the word "abstract"
+					item.abstractNote = abstract.innerText
+						.replace(/^[^\w\d]*abstract\s*/i, '');
+				}
+				
+				item.attachments = [];
+				if (extras.pdf) {
+					item.attachments.push({
+						url: extras.pdf,
+						title: "Full Text PDF",
+						mimeType: "application/pdf"
+					});
+				}
+				
+				item.libraryCatalog = url.replace(/^https?:\/\/(?:www\.)?/, '')
+					.replace(/[/:].*/, '') + " (Atypon)";
+				
+				if (item.series == 'Non-serials') {
+					delete item.series;
+				}
+				
+				if (item.numberOfVolumes == '0') {
+					delete item.numberOfVolumes;
+				}
+				
+				item.complete();
+			});
+			translator.translate();
+		});
+	}
+
+	// newer Atypon installs; 2nd one is Science, 3rd one ASM
+	if (doc.querySelector('a[href*="#pill-citations"], div.pill__item, section.pill__item div.citation-download')) {
+		let filename = attr(doc, 'input[name="downloadFileName"]', 'value');
+		finalize(filename);
+	}
+	else {
+		ZU.processDocuments(citationurl, function (citationDoc) {
+			let filename = attr(citationDoc, 'input[name="downloadFileName"]', 'value');
+			finalize(filename);
+		});
+	}
+}

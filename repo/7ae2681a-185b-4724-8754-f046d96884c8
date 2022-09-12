@@ -1,0 +1,88 @@
+function detectWeb(doc, url) {
+	if (/\/(news|analysis|blog|comment|preview|review)\/./.test(url)) {
+		return text(doc, '.af-issue-number') ? "magazineArticle" : "blogPost";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+
+function scrape(doc, _url) {
+	var issue = text(doc, '.af-issue-number'); // when issue info is available ("Appeared in The Art Newspaper"), change type to magazineArticle
+	var item;
+	if (issue) {
+		item = new Zotero.Item("magazineArticle");
+		
+		issue = issue.replace(/^,\s*/, '');
+		item.issue = issue.substr(0, issue.indexOf(' '));
+		item.date = issue.substr(issue.indexOf(' ') + 1);
+		item.ISSN = '0960-6556';
+	}
+	else {
+		item = new Zotero.Item("blogPost");
+	}
+	var jsonLD = doc.querySelector('script[type="application/ld+json"]'); // JSON-LD not yet built into EM
+	if (jsonLD) {
+		var json = JSON.parse(jsonLD.textContent);
+		item.title = json.headline;
+		if (!item.date) {
+			item.date = ZU.strToISO(json.dateModified || json.datePublished);
+		}
+		for (let author of json.author) {
+			if (author != 'The Art Newspaper') {
+				item.creators.push(ZU.cleanAuthor(author, "author"));
+			}
+		}
+	}
+	
+	item.publicationTitle = "The Art Newspaper";
+	item.language = "en";
+	item.url = attr(doc, 'link[rel=canonical]', 'href');
+	item.abstractNote = attr(doc, 'meta[name="description"]', 'content');
+	
+	item.attachments.push({
+		document: doc,
+		title: "Snapshot",
+		mimeType: "text/html"
+	});
+	
+	item.complete();
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.ais-Hits__root a, a.cp-link'); // 1st selector is search results; 2nd is CMS
+	var titles = doc.querySelectorAll('.sr-furniture h4, a.cp-link');
+	for (let i = 0; i < rows.length; i++) {
+		let href = rows[i].href;
+		let title = ZU.trimInternal(titles[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}

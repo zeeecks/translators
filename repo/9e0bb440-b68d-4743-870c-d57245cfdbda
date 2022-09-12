@@ -1,0 +1,25 @@
+function detectWeb(doc, url) { return FW.detectWeb(doc, url); }
+function doWeb(doc, url) { return FW.doWeb(doc, url); }
+
+FW.Scraper({
+itemType         : 'blogPost',
+detect           : FW.Url().match((/articles/)|(/reviews/)),
+title            : FW.Xpath('//meta[@property="og:title"]/@content').text(),
+attachments      : [{ url: FW.Url(),
+  title:  "GameSpot snapshot",
+  type: "text/html" }],
+creators         : FW.Xpath('(//h3/a[@rel="author"])[1]').text().cleanAuthor("author"),
+date             : FW.Xpath('//h3/time/@datetime').text(),
+blogTitle        : "GameSpot",
+language         : "en-US",
+abstractNote     : FW.Xpath('//meta[@name="description"]/@content').text().replace(/\n/g,"").replace(/&hellip;/,"...")
+});
+
+FW.MultiScraper({
+itemType         : 'multiple',
+detect           : FW.Url().match(/\/news\//), // news pages
+choices          : {
+  titles :  FW.Xpath('//article/a/div/h3[@class="media-title"]').text().trim(),
+  urls    :  FW.Xpath('//article/a[@class="js-event-tracking"]').key("href").trim()
+}
+});

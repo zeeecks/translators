@@ -1,0 +1,106 @@
+function detectWeb(doc, url) {
+	if (url.indexOf('/journals/')>-1 && url.indexOf('.shtml')>-1) {
+		return "journalArticle";
+	} else if (url.indexOf('/meetings/')>-1 && url.indexOf('.shtml')>-1) {
+		return "conferencePaper";
+	} else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//div[contains(@class, "article-list-entry")]/h4/a[contains(@class, "hx_link")]');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var type = detectWeb(doc, url);
+	var xmlUrl = ZU.xpathText(doc, '//a[contains(@class, "format_xml")]/@href');
+	ZU.doGet(xmlUrl, function(data) {
+		var parser = new DOMParser();
+		var xml = parser.parseFromString(data, "application/xml");
+		var item = new Zotero.Item(type);
+		//titles are sometimes given in multiple languages,
+		//but we only take the first one
+		item.title = ZU.xpathText(xml, '(//TitleGroup/Title)[1]');
+		var creators = ZU.xpath(xml, '//CreatorList/Creator');
+		for (var i=0; i<creators.length; i++) {
+			item.creators.push({
+				'lastName': ZU.xpathText(creators[i], './PersonNames/Lastname'),
+				'firstName': ZU.xpathText(creators[i], './PersonNames/Firstname'),
+				'creatorType': 'author'
+			});
+		}
+		item.publisher = ZU.xpathText(xml, '//PublisherList/Publisher/Corporation');
+		item.DOI = ZU.xpathText(xml, '//IdentifierDoi');
+		item.language = ZU.xpathText(xml, '//Language');
+		item.date = ZU.xpathText(xml, '//DatePublishedList/DatePublished');
+		if (item.date) {
+			item.date = item.date.replace(/(\d\d\d\d)(\d\d)(\d\d)/, "$1-$2-$3");
+		}
+		item.ISSN = ZU.xpathText(xml, '//SourceGroup/Journal/ISSN');
+		item.volume = ZU.xpathText(xml, '//SourceGroup/Journal/Volume');
+		item.issue = ZU.xpathText(xml, '//SourceGroup/Journal/Issue');
+		item.publicationTitle = ZU.xpathText(xml, '//SourceGroup/Journal/JournalTitle');
+		item.journalAbbreviation = ZU.xpathText(xml, '//SourceGroup/Journal/JournalTitleAbbr');
+		var articleNo = ZU.xpathText(xml, '//ArticleNo');
+		if (articleNo) {
+			item.pages = 'Doc' + articleNo;
+		}
+		
+		item.rights = ZU.xpathText(xml, '(//License/AltText)[1]');
+
+		var tags_en = ZU.xpath(xml, '//SubjectGroup/Keyword[@language="en"]');
+		var tags_de = ZU.xpath(xml, '//SubjectGroup/Keyword[@language="de"]');
+		var tags = ZU.xpath(xml, '//SubjectGroup/Keyword');
+		if (item.language.indexOf('en')>-1 && tags_en) {
+			tags = tags_en;
+		}
+		if (item.language.indexOf('ger')>-1 && tags_de) {
+			tags = tags_de;
+		}
+		for (var i=0; i<tags.length; i++) {
+			item.tags.push(tags[i].textContent);
+		}
+		
+		item.abstractNote = ZU.xpathText(xml, '//Abstract[1]');
+		
+		item.attachments.push({
+			document: doc,
+			title: "Snapshot"
+		});
+		
+		item.complete();
+	});
+	
+}

@@ -1,0 +1,91 @@
+function detectWeb(doc, url) {
+	if (ZU.xpathText(doc, '//div[@id="oc_program_summary_main"]')) {
+		return "presentation";
+	} 
+	
+	else if (url.indexOf('action=program.php')>-1 && getSearchResults(doc, true)) {
+		return "multiple";
+	} 
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//span[@class="oc_program_concurrentSessionPaperTitle"]/a');
+	for (var i=0; i<rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var item = new Z.Item("presentation");
+	var data = ZU.xpath(doc, '//div[@id="oc_program_summary_main"]');
+	//info from h1 and following line
+	item.title = ZU.xpathText(data, '//h1');
+	if (!item.title) item.title = ZU.xpathText(doc, '//h1');
+		
+	//info from top level li
+	var authors = ZU.xpath(data, '//div[@id="oc_program_summary_authors"]/p/strong');
+	for (var i = 0; i<authors.length; i++) {
+		item.creators.push(ZU.cleanAuthor(authors[i].textContent, "author"));
+	}
+	item.abstractNote = ZU.xpathText(data, '//div[@id="oc_program_summary_main"]/p[1]');
+	item.meetingName = ZU.xpathText(doc, '//div/a[@class="confName"]');
+	
+	var files = ZU.xpath(data, '//div[@id="oc_program_summary_files"]//a[img[contains(@alt, "View File")]]');
+	
+	for (var i = 0; i<files.length; i++) {
+		item.attachments.push({
+			title: "OpenConf Presentation",
+			url: "files[i].href"
+		})
+	}
+	
+	item.attachments.push({
+		title: "Snapshot",
+		document: doc
+	});
+	var fullprogramURL = ZU.xpathText(doc, '//div[@id="mainbody"]/a[contains(@href, "action=program.php")]/@href');
+	ZU.processDocuments(fullprogramURL, function (full){
+			var dates = ZU.xpath(full, '//div[@class="oc_program_Date"]');
+			if (dates.length) {
+				var firstdate = dates[0].id;
+				var lastdate;
+				if (dates.length>1) {
+					lastdate = dates[dates.length-1].id;
+					item.date = firstdate + " to " + lastdate;
+				}
+	
+				else {
+					item.date = firstdate;
+				}
+			}
+			item.complete();		
+	});
+}

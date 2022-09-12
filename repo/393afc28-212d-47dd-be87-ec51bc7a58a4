@@ -1,0 +1,72 @@
+let jsonSelector = 'script[type="application/ld+json"]';
+
+function detectWeb(doc, url) {
+	if ((url.includes('/news-story/') || url.includes('/news/')) && doc.querySelector(jsonSelector)) {
+		return "newspaperArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('h3.story-block__heading a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let meta = JSON.parse(text(doc, jsonSelector));
+
+	let item = new Zotero.Item('newspaperArticle');
+	item.title = meta.headline;
+	item.date = ZU.strToISO(meta.datePublished);
+	item.abstractNote = meta.description;
+	if (meta.author) {
+		item.creators = meta.author.name
+			.split(/ and |, /)
+			.map(name => ZU.cleanAuthor(name, 'author', false));
+	}
+	item.publicationTitle = meta.publisher.name;
+	item.section = getSection(doc);
+	item.url = meta.mainEntityOfPage['@id'];
+	item.libraryCatalog = '';
+	item.attachments.push({
+		title: "Snapshot",
+		url: item.url,
+		mimeType: 'text/html',
+		snapshot: true
+	});
+	item.complete();
+}
+
+function getSection(doc) {
+	let breadcrumbs = doc.querySelector('#breadcrumbs');
+	if (!breadcrumbs || breadcrumbs.childElementCount < 2) {
+		// we want to return null, not '', if we can't find a section tag
+		return text(doc, '.tg-tlc-storyheader_sectiontag') || null;
+	}
+	
+	return ZU.capitalizeTitle(breadcrumbs.lastChild.innerText, true);
+}

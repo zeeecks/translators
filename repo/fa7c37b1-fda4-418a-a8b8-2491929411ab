@@ -1,0 +1,76 @@
+function detectWeb(doc, url) {
+	if (/\d{4}\/\d+\/\d+\/\d+\//.test(url) || /\/[^/]+\/\d+\//.test(url)) {
+		return "blogPost";
+	}
+	else if (/search\?q=|polygon\.com\/?($|news|reviews|features|guides|videos|movies|tv|comics|podcasts)\/?/.test(url) || getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator('web');
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48'); // embedded metadata
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) { // correct bad metadata in here
+		item.itemType = "blogPost";
+		if (!item.blogTitle) {
+			item.blogTitle = item.publicationTitle;
+		}
+		item.language = "en-US";
+		var authorMetadata = ZU.xpathText(doc, '//script[contains(text(), "dataLayer =")]');
+		if (authorMetadata) { // EM doesn't handle multiple authors, so start from scratch
+			authorMetadata = authorMetadata.match(/"Author"\s?:\s?"([^"]*)"/)[1].split(":");
+			item.creators = [];
+			do {
+				item.creators.push(ZU.cleanAuthor(authorMetadata[0], "author"));
+				authorMetadata.shift();
+			}
+			while (authorMetadata.length);
+		}
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.doWeb(doc, url);
+	});
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('h2.c-entry-box--compact__title a');
+	for (let i = 0; i < rows.length; i++) {
+		let href = rows[i].href;
+		let title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	switch (detectWeb(doc, url)) {
+		case "multiple":
+			Zotero.selectItems(getSearchResults(doc, false), function (items) {
+				if (!items) {
+					return;
+				}
+				var articles = [];
+				for (var i in items) {
+					articles.push(i);
+				}
+				ZU.processDocuments(articles, scrape);
+			});
+			break;
+		case "blogPost":
+			scrape(doc, url);
+			break;
+	}
+}

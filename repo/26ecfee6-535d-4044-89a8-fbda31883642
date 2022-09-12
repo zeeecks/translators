@@ -1,0 +1,61 @@
+async function detectWeb(doc, _url) {
+	if (doc.querySelector('div[itemprop="mainEntity"][itemtype="https://schema.org/Question"]')
+			|| doc.querySelector('#content > [itemscope]')) {
+		return 'multiple';
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('#question, .answer');
+	for (let row of rows) {
+		let id = row.id;
+		let summary = ZU.trimInternal(text(row, '[itemprop="text"] p'));
+		if (!id || !summary) continue;
+		if (checkOnly) return true;
+		if (id == 'question') {
+			summary = 'Q: ' + summary;
+		}
+		else {
+			summary = 'A: ' + summary;
+		}
+		found = true;
+		items[id] = summary;
+	}
+	return found ? items : false;
+}
+
+async function doWeb(doc, _url) {
+	Zotero.selectItems(getSearchResults(doc, false), function (items) {
+		if (items) {
+			Object.keys(items).forEach(id => scrape(doc, id));
+		}
+	});
+}
+
+function scrape(doc, id) {
+	let el = doc.getElementById(id);
+	let item = new Zotero.Item('forumPost');
+	item.forumTitle = attr(doc, 'meta[property="og:site_name"]', 'content');
+	item.date = ZU.strToISO(attr(el, 'time[itemprop="dateCreated"]', 'datetime')
+		|| attr(el, '.relativetime', 'title'));
+	// .href converts the URL to absolute
+	item.url = el.querySelector('a[itemprop="url"]').href;
+	item.creators.push(ZU.cleanAuthor(text(el, '[itemprop="author"] a'), 'author'));
+	item.attachments.push({
+		title: 'Snapshot',
+		document: doc
+	});
+
+	if (id == 'question') {
+		item.title = attr(doc, 'meta[itemprop="name"]', 'content');
+		item.postType = 'Forum post';
+	}
+	else {
+		item.title = `Answer to "${attr(doc, 'meta[itemprop="name"]', 'content')}"`;
+	}
+
+	item.complete();
+}

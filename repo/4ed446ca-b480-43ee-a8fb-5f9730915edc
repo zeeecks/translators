@@ -1,0 +1,78 @@
+// attr()/text() v2
+function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null;}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null;}
+
+
+function detectWeb(doc, url) {
+	var type = ZU.xpathText(doc, '//meta[@property="og:type"]/@content');
+	if (type == "article") {
+		return "newspaperArticle";
+	} else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+}
+
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.right h2 a');
+	for (let i=0; i<rows.length; i++) {
+		let href = rows[i].href;
+		let title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			var articles = [];
+			for (var i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+		});
+	} else {
+		scrape(doc, url);
+	}
+}
+
+
+function scrape(doc, url) {
+	var authorsMeta = ZU.xpathText(doc, '//meta[@property="author"]/@content');
+	
+	var translator = Zotero.loadTranslator('web');
+	// Embedded Metadata
+	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
+	// translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', function (obj, item) {
+		if (authorsMeta) {
+			// multiple authors are not handled correctly by EM and
+			// we want to exclude generic names like "Redakce"
+			item.creators = [];
+			let authorsList = authorsMeta.split(/\s*,\s*/);
+			for (let i=0; i<authorsList.length; i++) {
+				let author = authorsList[i];
+				if (author!= "Redakce") {
+					item.creators.push(ZU.cleanAuthor(authorsList[i], "author"));
+				}
+			}
+		}
+		
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function(trans) {
+		trans.itemType = "newspaperArticle";
+		trans.doWeb(doc, url);
+	});
+}

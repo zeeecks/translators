@@ -1,0 +1,91 @@
+function detectWeb(doc, url) {
+	if (url.match(/\/v2\/record\//)) {
+		return "book";
+	}
+	if (url.match(/\/v2\/search\?[^/]*query=/)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('h2.cp-title > a[href*="/item/show"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(text(row, '.title-content'));
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item();
+	item.libraryCatalog = attr(doc, 'meta[property="og:site_name"]', 'content');
+	
+	let recordUrl = url.endsWith('/originalrecord') ? url : url + '/originalrecord';
+	ZU.processDocuments(recordUrl, function (marcDoc) {
+		if (!marcDoc.querySelector('.bib-item-row')) {
+			// a small number of items don't have MARC data
+			// in that case, we just do our best
+			Z.debug("No MARC data");
+			
+			item.itemType = 'book';
+			item.title = text(doc, '.cp-bib-title span[aria-hidden]');
+			let subtitle = text(doc, '.cp-bib-subtitle');
+			if (subtitle) {
+				item.title += ": " + subtitle;
+			}
+			let authors = doc.querySelectorAll('.main-info .cp-bib-authors span[aria-hidden]');
+			for (let author of authors) {
+				item.creators.push(ZU.cleanAuthor(author.innerText, "author", true));
+			}
+			let bibFields = doc.querySelectorAll('.cp-bib-field');
+			for (let bibField of bibFields) {
+				if (text(bibField, '.cp-bib-field-label').includes("Publication")) {
+					let value = text(bibField, '.main-content').split(', ');
+					item.publisher = value[0];
+					item.date = value[1];
+				}
+			}
+			
+			let isbnMatches = text(doc, 'script[data-iso-key="_0"]')
+				.match(/"values":\["([0-9]{10}|[0-9]{13})"\]/);
+			let isbn = isbnMatches && isbnMatches[1];
+			if (isbn) {
+				item.ISBN = ZU.cleanISBN(isbn);
+			}
+			item.complete();
+			
+			return;
+		}
+		
+		// Load MARC
+		let translator = Z.loadTranslator("import");
+		translator.setTranslator("a6ee60df-1ddc-4aae-bb25-45e0537be973");
+		
+		translator.getTranslatorObject(function (marc) {
+			let record = new marc.record();
+			for (let row of marcDoc.querySelectorAll('.bib-item-row')) {
+				record.addField(text(row, '.tag'), text(row, '.indicator'), row.lastChild.innerText.replace(/\$/g, '\x1F'));
+			}
+			record.translate(item);
+			item.complete();
+		});
+	});
+}

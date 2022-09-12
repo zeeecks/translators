@@ -1,0 +1,92 @@
+function detectWeb(doc, url) {
+	if (url.includes('/article/')) {
+		return "journalArticle";
+	}
+	else if (url.includes('/book/')) {
+		return "book";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	else {
+		return false;
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = ZU.xpath(doc, '//li[@class="title"]//a[contains(@href, "/article/") or contains(@href, "/book/")]');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (!items) {
+				return true;
+			}
+			let articles = [];
+			for (let i in items) {
+				articles.push(i);
+			}
+			ZU.processDocuments(articles, scrape);
+			return true;
+		});
+	}
+	else {
+		scrape(doc);
+	}
+}
+
+
+function scrape(doc) {
+	let citationURL = ZU.xpathText(doc, '//li[@class="view_citation"]//a/@href');
+	ZU.processDocuments(citationURL, function (respText) {
+		let risEntry = ZU.xpathText(respText, '//*[(@id = "tabs-4")]//p');
+		let doiEntry = ZU.xpathText(respText, '//*[(@id = "tabs-1")]//p');
+		if (doiEntry.includes('doi:')) {
+			var doi = doiEntry.split('doi:')[1].replace(/.$/, '');
+		}
+		// RIS translator
+		let translator = Zotero.loadTranslator("import");
+		translator.setTranslator("32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7");
+		translator.setString(risEntry);
+		translator.setHandler("itemDone", function (obj, item) {
+			if (doi) item.DOI = doi;
+			let abstract = ZU.xpathText(doc, '//div[@class="abstract"][1]/p');
+			if (!abstract) abstract = ZU.xpathText(doc, '//div[@class="description"][1]');
+			if (!abstract) abstract = ZU.xpathText(doc, '//div[contains(@class, "card_summary") and contains(@class, "no_border")]');
+			let tags = ZU.xpathText(doc, '//*[contains(concat( " ", @class, " " ), concat( " ", "kwd-group", " " ))]//p');
+			if (abstract) {
+				item.abstractNote = abstract.replace(/^,*\s*Abstract[:,]*/, "").replace(/show (less|more)$/, "").replace(/,\s*$/, "");
+			}
+			if (tags) {
+				item.tags = tags.split(",");
+			}
+			item.notes = [];
+			
+			let cards = doc.querySelectorAll('.card');
+			for (let card of cards) {
+				let url = attr(card, 'a[href*="/pdf"]', 'href');
+				if (!url) continue;
+				item.attachments.push({
+					url,
+					title: text(card, '.title') || "Full Text PDF",
+					mimeType: 'application/pdf'
+				});
+			}
+			item.complete();
+		});
+		translator.translate();
+	});
+}

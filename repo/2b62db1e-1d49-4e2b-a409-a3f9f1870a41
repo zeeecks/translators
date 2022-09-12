@@ -1,0 +1,264 @@
+function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null}
+/** select a Mime type for the attachment **/
+function selectMimeType(url) {
+	let fileType = url.replace(/^.*(\..+?)$/, '$1');
+
+	switch (fileType) {
+		case ".jpg":
+			mime = "image/jpeg";
+			break;
+		case ".pdf":
+			mime = "application/pdf";
+			break;
+		default:
+			mime = fileType;
+	}
+
+	return mime;
+}
+
+function findDate(dateStr) {
+	
+	// Four date strings are possible in AtoM
+	// TYPE = 'Creation' or 'Accumulation'
+	// and should be ISO-8601 compliant:
+	// (1) single date: 
+	//		yyyy-mm-dd (TYPE)
+	// (2) single FROM date: 
+	//		yyyy-mm-dd - (TYPE)
+	// (3) single TO date:
+	//		- yyyy-mm-dd (TYPE)
+	// (4) range i.e. FROM and TO dates:
+	//		yyyy-mm-dd - YYYY-MM-DD (TYPE)
+	// N.B. Some dates in AtoM are yyyy only.
+	
+	
+	if (dateStr.indexOf(" - ") > 0) {
+		dateRange = dateStr.split("(")[0].split(" - ");
+		
+		if (dateRange[1].trim().length > 0) {
+			return ZU.trimInternal(dateRange[1].trim());
+		} else {
+			return ZU.trimInternal(dateRange[0].trim());
+		}
+
+	} else {
+		dateRange = dateStr.split("(")[0];
+		return ZU.trimInternal(dateRange);
+	}
+
+}
+
+
+function detectWeb(doc, url) {
+
+	if (url.includes("/index.php/") && !url.endsWith("/" || "/index.php")) {
+		if (!url.includes("/actor/") && !url.includes("/repository/") && !url.includes("/taxonomy/")) {
+			// This may be a search result of 0 or more items
+			
+			let conditions = ["search?query=", "search/advanced?f=", "search/advanced?page=", "informationobject/browse"];
+			if (conditions.some(str => url.includes(str)) && getSearchResults(doc, true)) {
+				return 'multiple';
+			}	
+			else {
+				return 'manuscript';
+			}			
+		}
+	}
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('.search-result-description a');
+	for (var i = 0; i < rows.length; i++) {
+		var href = rows[i].href;
+		var title = ZU.trimInternal(rows[i].title);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+
+	var type = detectWeb(doc, url);
+
+	switch (type) {
+		case 'manuscript':
+			scrape(doc, url);
+			break;
+		case 'multiple':
+			Zotero.selectItems(getSearchResults(doc, false), function(items) {
+				if (!items) {
+					return true;
+				}
+				var articles = [];
+				for (var i in items) {
+					articles.push(i);
+				}
+				ZU.processDocuments(articles, scrape);
+			});
+			break;
+		default:
+	}
+}
+
+function scrape(doc, url) {
+	var type = detectWeb(doc, url);
+
+	var item = new Zotero.Item('manuscript');
+
+	var identityArea = doc.querySelector("section#identityArea");
+
+	if (identityArea) {
+
+		var identityFields = identityArea.querySelectorAll("div.field");
+
+		if (identityFields) {
+			for (let field of identityFields) {
+
+				let nextIdentityField = text(field, "h3");
+
+				switch (nextIdentityField) {
+					case "Title":
+						item.title = ZU.trimInternal(text(field, "div"));
+						break;
+
+					case "Reference code":
+						item.archiveLocation = ZU.trimInternal(text(field, "div"));
+						break;
+
+					case "Level of description":
+						item.manuscriptType = ZU.trimInternal(text(field, "div"));
+						break;
+
+					case "Date(s)":
+
+						// Dates stored in an unordered list of 0–2 items.
+						// 0 items = no dates ; store "" in item.date;
+						// 1 item = either creation or accumulation dates. Use creation dates if available;
+						// 2 items = both creation and accumulation dates. Use creation dates;
+
+						var dateList = field.querySelectorAll("ul > li");
+
+						if (dateList.length > 0) {
+
+							var prefDate,dateCreationStr,dateAccumStr = "";
+							
+							for (let date of dateList) {
+
+								let dateStr = date.textContent;
+								
+								if (dateStr.includes("(Creation)")) {
+									dateCreationStr = findDate(dateStr);
+									prefDate = "cr";
+									if (dateCreationStr.length > 0) {
+										item.notes.push({
+											title: "Creation Date(s)",
+											note: "Date(s): " + ZU.trimInternal(dateStr)
+										});
+									}
+								} else if (dateStr.includes("(Accumulation)")) {
+									dateAccumStr = findDate(dateStr);
+									if (!prefDate) {									
+										prefDate = "ac";
+									}
+									if (dateAccumStr.length > 0) {
+										item.notes.push({
+											title: "Accumulation Date(s)",
+											note: "Date(s): " + ZU.trimInternal(dateStr)
+										});
+								} else {
+									item.date = "";
+									}
+								}
+							}
+							// Zotero entry date is Creation date, if available.
+							if (prefDate === "cr") {
+								item.date = dateCreationStr;
+							} else {
+								item.date = dateAccumStr;
+							}
+						} else {
+							// 0 items in date list
+							item.date = "";
+						}
+						break;
+
+					default:
+						break;
+				}
+
+			}
+		}
+	}
+
+	if (item.title && item.title == item.title.toUpperCase()) {
+		item.title = ZU.capitalizeTitle(item.title, true);	
+	}
+	
+	if (item.date) {
+		item.date = ZU.trimInternal(item.date).replace(/^-$/, "");
+	}
+								   
+	if (!item.title) {
+		item.title = "[Title Not Found]";
+	}
+
+	item.url = url;
+
+	var contentArea = doc.querySelector("section#contentAndStructureArea");
+
+	if (contentArea) {
+		var contentFields = contentArea.querySelectorAll("div.field");
+
+		for (var j = 0; j < contentFields.length; j++) {
+			let nextContentField = text(contentFields[j], "h3");
+			if (nextContentField == "Scope and content"){
+				item.abstractNote = ZU.trimInternal(text(contentFields[j], "div"));
+				break;
+			}
+		}
+	}
+
+	var contextArea = doc.querySelector("section#contextArea");
+
+	// all SROWA creators are organisations not individuals ; therefore remove the first part of the
+	// creator reference code eg. "AU WA A58 - ";
+
+	if (contextArea) {
+		var contextFields = contextArea.querySelectorAll("div.field");
+
+		for (var k = 0; k < contextFields.length; k++) {
+
+			let nextContextField = text(contextFields[k], "h3");
+			if (nextContextField == "Name of creator") {
+					creatorName = text(contextFields[k], "div > a").split(" - ");
+					item.creators.push({
+						lastName: ZU.capitalizeTitle(creatorName[1], true),
+						creatorType: "author",
+						fieldMode: true 
+					});
+			}
+		}
+
+	}
+
+	// attachment(s)
+
+	var digitalObject = doc.querySelector("div.digital-object-reference");
+
+	if (digitalObject) {
+		item.attachments.push({
+			url: attr(digitalObject, 'a', 'href'),
+			title: "Digital copy from SROWA.",
+			type: selectMimeType(attr(digitalObject, 'a', 'href')),
+			snapshot: true
+		});
+	}
+
+	item.complete();
+}

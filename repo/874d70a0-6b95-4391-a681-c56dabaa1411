@@ -1,0 +1,175 @@
+function detectWeb(doc, url) {
+	if (url.includes("/ct2/results?")) {
+		Zotero.monitorDOMChanges(doc.querySelector("#theDataTable"));
+		if (getSearchResults(doc, true)) {
+			return "multiple";
+		}
+	}
+
+	if (url.includes("/ct2/show")) {
+		return "report";
+	}
+
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('table#theDataTable a[href*="/ct2/show"]');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function isJsonAPIRequest(url) {
+	if (
+		url.includes("https://clinicaltrials.gov/api/query")
+	&& url.includes("fmt=JSON")
+	) {
+		return true;
+	}
+	else {
+		return false;
+	}
+}
+
+function isXmlAPIRequest(url) {
+	if (
+		url.includes("https://clinicaltrials.gov/api/query")
+	&& url.includes("fmt=XML")
+	) {
+		return true;
+	}
+	else {
+		return false;
+	}
+}
+
+function getClinicalTrialID(url) {
+	if (isXmlAPIRequest(url) || isJsonAPIRequest(url)) {
+		return url.split("expr=")[1].split("&")[0];
+	}
+	else {
+		return url.split("/show/")[1].split("?")[0];
+	}
+}
+
+function dateTimeToDateString(dateTime) {
+	return dateTime.split(" ")[0].split(":").join("-");
+}
+
+function scrape(doc, url) {
+	const clinicalTrialID = getClinicalTrialID(url);
+	let jsonRequestURL;
+	if (!isJsonAPIRequest(url)) {
+		jsonRequestURL = `https://clinicaltrials.gov/api/query/full_studies?expr=${clinicalTrialID}&fmt=JSON`;
+	}
+	else {
+		jsonRequestURL = url;
+	}
+
+	ZU.doGet(jsonRequestURL, function (resp) {
+		const data = JSON.parse(resp);
+		var item = new Zotero.Item("report");
+		const study = data.FullStudiesResponse.FullStudies[0].Study;
+		item.itemType = "report";
+		item.title = study.ProtocolSection.IdentificationModule.OfficialTitle;
+
+		// Start get the creator info
+		let creators = [];
+		let responsiblePartyInvestigator;
+		let sponsor;
+		let collaborators = [];
+		if (
+			study.ProtocolSection.SponsorCollaboratorsModule.hasOwnProperty(
+				"ResponsibleParty"
+			)
+		) {
+			const responsibleParty
+				= study.ProtocolSection.SponsorCollaboratorsModule.ResponsibleParty;
+			if (
+				typeof responsibleParty.ResponsiblePartyInvestigatorFullName == "string"
+			) {
+				responsiblePartyInvestigator
+					= responsibleParty.ResponsiblePartyInvestigatorFullName;
+				creators.push(
+					ZU.cleanAuthor(responsiblePartyInvestigator, "author", false)
+				);
+			}
+		}
+
+		if (
+			study.ProtocolSection.SponsorCollaboratorsModule.hasOwnProperty(
+				"LeadSponsor"
+			)
+		) {
+			sponsor
+				= study.ProtocolSection.SponsorCollaboratorsModule.LeadSponsor
+					.LeadSponsorName;
+			let sponsorCreatorType;
+			if (creators.length === 0) {
+				sponsorCreatorType = "author";
+			}
+			else {
+				sponsorCreatorType = "contributor";
+			}
+			creators.push({
+				lastName: sponsor,
+				creatorType: sponsorCreatorType,
+				fieldMode: 1
+			});
+		}
+
+		if (
+			study.ProtocolSection.SponsorCollaboratorsModule.hasOwnProperty(
+				"CollaboratorList"
+			)
+		) {
+			const collaboratorList
+				= study.ProtocolSection.SponsorCollaboratorsModule.CollaboratorList
+					.Collaborator;
+			collaboratorList.forEach((collaborator) => {
+				collaborators.push({
+					lastName: collaborator.CollaboratorName,
+					creatorType: "contributor",
+					fieldMode: 1
+				});
+			});
+			collaborators.forEach((collaborator) => {
+				creators.push(collaborator);
+			});
+		}
+
+		item.creators = creators;
+		// Done get the creator info
+
+		item.date = study.ProtocolSection.StatusModule.LastUpdateSubmitDate;
+		item.accessDate = dateTimeToDateString(data.FullStudiesResponse.DataVrs);
+		item.institution = "clinicaltrials.gov";
+		item.reportNumber = clinicalTrialID;
+		item.shortTitle = study.ProtocolSection.IdentificationModule.BriefTitle;
+		item.abstractNote = study.ProtocolSection.DescriptionModule.BriefSummary;
+		item.url = "https://clinicaltrials.gov/ct2/show/" + clinicalTrialID;
+		item.reportType = "Clinical trial registration";
+		item.extra = `submitted: ${study.ProtocolSection.StatusModule.StudyFirstSubmitDate}`;
+		item.complete();
+	});
+}

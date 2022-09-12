@@ -1,0 +1,90 @@
+let apiBase = 'https://archiveapi.alsharekh.org';
+let urlRe = /\/Articles\/([^/]+)\/([^/]+)\/([^/?#]+)/;
+
+function detectWeb(doc, url) {
+	if (urlRe.test(url)) {
+		return "magazineArticle";
+	}
+	else if (getSearchResults(doc, true)) {
+		return "multiple";
+	}
+	return false;
+}
+
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('td > a[href*="/Articles/"]');
+	for (let row of rows) {
+		// TODO: check and maybe adjust
+		let href = row.href;
+		// TODO: check and maybe adjust
+		let title = ZU.trimInternal(row.textContent);
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
+}
+
+function doWeb(doc, url) {
+	if (detectWeb(doc, url) == "multiple") {
+		Zotero.selectItems(getSearchResults(doc, false), function (items) {
+			if (items) ZU.processDocuments(Object.keys(items), scrape);
+		});
+	}
+	else {
+		scrape(doc, url);
+	}
+}
+
+function scrape(doc, url) {
+	let item = new Zotero.Item('magazineArticle');
+	
+	let [, MID, IID, AID] = url.match(urlRe);
+	ZU.doGet(`${apiBase}/Search/IssueHInfo?MID=${MID}&IID=${IID}`, function (respText) {
+		let issue = JSON.parse(respText);
+		ZU.doGet(`${apiBase}/Search/ArticleHInfo?AID=${AID}`, function (respText) {
+			let article = JSON.parse(respText);
+			
+			item.title = article.articleTitle.replace(' : ', ": ");
+			item.pages = article.pageNo;
+			item.creators.push(ZU.cleanAuthor(article.articleAuthor, 'author'));
+			
+			item.publicationTitle = issue.magazineArabicName;
+			item.place = issue.countryName;
+			item.issue = issue.issuenumber || issue.issueName;
+			item.date = ZU.strToISO(arabicToEnglishDate(issue.newIssueDate));
+			
+			item.url = url;
+			
+			item.attachments.push({
+				title: 'Snapshot',
+				document: doc
+			});
+			
+			item.complete();
+		});
+	});
+}
+
+// just so we get months on non-Arabic locales
+function arabicToEnglishDate(date) {
+	return date
+		.replace('يناير', 'January')
+		.replace('فبراير', 'February')
+		.replace('مارس', 'March')
+		.replace('أبريل', 'April')
+		.replace('إبريل', 'April')
+		.replace('مايو', 'May')
+		.replace('يونيو', 'June')
+		.replace('يونية', 'June')
+		.replace('يوليو', 'July')
+		.replace('يوليو', 'July')
+		.replace('أغسطس', 'August')
+		.replace('سبتمبر', 'September')
+		.replace('أكتوبر', 'October')
+		.replace('نوفمبر', 'November')
+		.replace('ديسمبر', 'December');
+}

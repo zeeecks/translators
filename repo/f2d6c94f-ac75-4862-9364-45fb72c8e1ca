@@ -1,0 +1,34 @@
+/* global attr, text */
+
+function detectWeb(doc, _url) {
+	if (attr(doc, "meta[property='og:type']", "content") === "article") {
+		return "newspaperArticle";
+	}
+	return false;
+}
+
+function doWeb(doc, url) {
+	scrape(doc, url);
+}
+
+function scrape(doc, url) {
+	var translator = Zotero.loadTranslator("web");
+	// Embedded Metadata
+	translator.setTranslator("951c027d-74ac-47d4-a107-9c3069ab7b48");
+
+	translator.setHandler("itemDone", function (obj, item) {
+		item.creators = [{
+			lastName: text(doc, ".info_view .txt_info"),
+			fieldMode: 1,
+			creatorType: "author"
+		}];
+		item.publicationTitle = attr(doc, ".link_cp .thumb_g", "alt");
+		item.abstractNote = item.abstractNote.replace(/^\[[^\]]+\]/, "").replace(/^.+ 기자 =/, "");
+		item.complete();
+	});
+
+	translator.getTranslatorObject(function (trans) {
+		trans.itemType = "newspaperArticle";
+		trans.doWeb(doc, url);
+	});
+}
